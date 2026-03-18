@@ -358,7 +358,7 @@ async function dispatch(userId, userMessage, replyToken) {
 
     case 'briefing': {
       try {
-        const messages = await briefing.generate();
+        const messages = await briefing.generateMorning();
         await lineClient.replyMessages(replyToken, messages);
       } catch (e) {
         await lineClient.replyMessage(replyToken, `ブリーフィング生成に失敗しました: ${e.message}`);
