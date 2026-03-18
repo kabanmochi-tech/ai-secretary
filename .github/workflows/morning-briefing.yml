@@ -1,26 +1,19 @@
 # ================================================================
-# AI秘書 — 朝のサマリー自動実行（GitHub Actions）
-#
-# GitHub Secrets に登録が必要なもの:
-#   LINE_CHANNEL_ACCESS_TOKEN  : LINEチャネルアクセストークン
-#   LINE_CHANNEL_SECRET        : LINEチャネルシークレット
-#   LINE_USER_ID               : あなたのLINE USER ID
-#   ANTHROPIC_API_KEY          : AnthropicのAPIキー
-#   GOOGLE_CLIENT_ID           : Google OAuthクライアントID
-#   GOOGLE_CLIENT_SECRET       : Google OAuthクライアントシークレット
-#   RENDER_GOOGLE_TOKEN_JSON   : tokens/google_token.json の中身（JSON文字列）
-#
-# RENDER_GOOGLE_TOKEN_JSON は setup.js 実行後に
-#   cat tokens/google_token.json
-# の出力をそのままコピーして貼り付けてください。
+# AI秘書 — 朝・夜ブリーフィング自動実行（GitHub Actions）
 # ================================================================
 
-name: 朝のブリーフィング（毎朝8時JST）
+name: ブリーフィング（朝8時・夜20時 JST）
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # UTC 23:00 = JST 08:00
+    - cron: '0 23 * * *'   # UTC 23:00 = JST 08:00（朝）
+    - cron: '0 11 * * *'   # UTC 11:00 = JST 20:00（夜）
   workflow_dispatch:
+    inputs:
+      type:
+        description: 'morning or evening'
+        required: false
+        default: 'morning'
 
 jobs:
   briefing:
@@ -47,5 +40,17 @@ jobs:
           echo "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" >> .env
           echo "RENDER_GOOGLE_TOKEN_JSON=${{ secrets.RENDER_GOOGLE_TOKEN_JSON }}" >> .env
 
-      - name: 朝のブリーフィングを送信
-        run: node src/briefing.js
+      - name: ブリーフィングの種別を判定
+        id: type
+        run: |
+          HOUR=$(TZ=Asia/Tokyo date +%H)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.type }}" >> $GITHUB_OUTPUT
+          elif [ "$HOUR" -ge 19 ]; then
+            echo "type=evening" >> $GITHUB_OUTPUT
+          else
+            echo "type=morning" >> $GITHUB_OUTPUT
+          fi
+
+      - name: ブリーフィングを送信
+        run: node src/briefing.js ${{ steps.type.outputs.type }}
