@@ -145,9 +145,58 @@ async function run() {
   console.log(`[briefing] ${type} 送信完了`);
 }
 
+// ── TODOリマインダー（期限3日前・前日・当日 7:00）──────
+async function sendTodoReminders(lineClient) {
+  const now = jstNow();
+  const todayStr = toDateStr(now);
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = toDateStr(tomorrow);
+
+  const in3 = new Date(now);
+  in3.setDate(in3.getDate() + 3);
+  const in3Str = toDateStr(in3);
+
+  let items;
+  try {
+    items = await todo.list('pending');
+  } catch (e) {
+    console.error('[reminder] todo.list error:', e.message);
+    return;
+  }
+
+  for (const t of items) {
+    if (!t.due_date) continue;
+    let label = null;
+    if (t.due_date === todayStr)     label = `⏰ 今日が期限です！`;
+    else if (t.due_date === tomorrowStr) label = `📅 明日が期限です`;
+    else if (t.due_date === in3Str)      label = `🔔 3日後が期限です`;
+    if (!label) continue;
+
+    const msg = `${label}\n📋 ${t.title}\n期限: ${t.due_date.slice(5).replace('-', '/')}`;
+    try {
+      await lineClient.pushMessage(msg);
+      console.log(`[reminder] 送信: ${t.title} (${t.due_date})`);
+    } catch (e) {
+      console.error(`[reminder] 送信失敗: ${t.title}:`, e.message);
+    }
+  }
+}
+
 // ── Renderサーバー用cronスケジューラー ──────────
 function startCron() {
   const lineClient = new LineClient();
+
+  // 朝7時：TODOリマインダー
+  cron.schedule('0 7 * * *', async () => {
+    try {
+      console.log('[reminder] cron実行');
+      await sendTodoReminders(lineClient);
+    } catch (e) {
+      console.error('[reminder] cron error:', e.message);
+    }
+  }, { timezone: 'Asia/Tokyo' });
 
   // 朝8時
   cron.schedule('0 8 * * *', async () => {
@@ -171,11 +220,11 @@ function startCron() {
     }
   }, { timezone: 'Asia/Tokyo' });
 
-  console.log('[briefing] cronスケジュール登録済み（朝8時・夜20時 JST）');
+  console.log('[briefing] cronスケジュール登録済み（7:00リマインダー・朝8時・夜20時 JST）');
 }
 
 if (require.main === module) {
   run().catch(err => { console.error(err); process.exit(1); });
 }
 
-module.exports = { generateMorning, generateEvening, startCron };
+module.exports = { generateMorning, generateEvening, startCron, sendTodoReminders };
