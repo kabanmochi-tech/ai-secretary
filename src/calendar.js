@@ -52,10 +52,13 @@ class GoogleCalendarClient {
 
   async checkConflict(start, end) {
     const calendar = this._getCalendar();
+    // 境界値（ぴったり終わる/始まる）を重複と判定しないよう1分のバッファを設ける
+    const tMin = new Date(new Date(start).getTime() + 60000).toISOString();
+    const tMax = new Date(new Date(end).getTime() - 60000).toISOString();
     const res = await calendar.events.list({
       calendarId: this.calendarId,
-      timeMin: new Date(start).toISOString(),
-      timeMax: new Date(end).toISOString(),
+      timeMin: tMin,
+      timeMax: tMax,
       singleEvents: true,
     });
     return (res.data.items || []).map(e => ({
