@@ -14,6 +14,13 @@ const gmailClient = new GmailClient();
 const AFFIRMATIVE = /^(はい|yes|ok|OK|送信|する|いいよ|お願い|大丈夫|よろしく|確定|登録|追加|削除)/i;
 const NEGATIVE = /^(いいえ|no|キャンセル|やめて|やめる|中止|取り消し)/i;
 
+// キーワードで確実に判定できるアクションを先に処理
+function quickClassify(msg) {
+  if (/メール|未読|inbox|受信|Gmail/i.test(msg)) return 'gmail';
+  if (/TODO|タスク|やること|やることリスト/i.test(msg)) return 'todo';
+  return null;
+}
+
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
 
 function getSession(userId) {
@@ -105,6 +112,30 @@ async function dispatch(userId, userMessage, replyToken) {
   if (session.pendingAction && NEGATIVE.test(userMessage.trim())) {
     clearPending(session);
     await lineClient.replyMessage(replyToken, 'キャンセルしました');
+    return;
+  }
+
+  // キーワードで確実に判定できる場合はAIをスキップ
+  const quick = quickClassify(userMessage);
+  if (quick === 'gmail') {
+    session.lastMessages.push({ role: 'user', content: userMessage });
+    if (session.lastMessages.length > 6) session.lastMessages.shift();
+    try {
+      const EXCLUDE_REAL_ESTATE =
+        '-subject:(物件紹介 OR 新着物件 OR 物件情報 OR 不動産情報 OR 賃貸物件 OR 売買物件 OR マンション情報 OR "物件のご紹介" OR "新着のご案内" OR "おすすめ物件" OR "物件特集")' +
+        ' -from:(homes.co.jp OR suumo.jp OR athome.co.jp OR chintai.com OR realestate)';
+      const emails = await gmailClient.listUnread(5, 'is:unread ' + EXCLUDE_REAL_ESTATE);
+      await lineClient.replyMessage(replyToken, formatGmailList(emails));
+    } catch (e) {
+      await lineClient.replyMessage(replyToken, `メールの取得に失敗しました: ${e.message}`);
+    }
+    return;
+  }
+  if (quick === 'todo') {
+    session.lastMessages.push({ role: 'user', content: userMessage });
+    if (session.lastMessages.length > 6) session.lastMessages.shift();
+    const items = todo.list('pending');
+    await lineClient.replyMessage(replyToken, todo.formatList(items));
     return;
   }
 
