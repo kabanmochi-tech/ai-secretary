@@ -21,6 +21,54 @@ const EXCLUDE_REAL_ESTATE =
 
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
 
+function jstNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+}
+function toDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// メッセージから期限日を抽出（JST基準）
+function extractDueDate(msg) {
+  const now = jstNow();
+  const year = now.getFullYear();
+
+  // 「3/25」「3月25日」「03/25」などにマッチ
+  const mMD = msg.match(/(\d{1,2})[\/月](\d{1,2})日?(?:まで|までに)?/);
+  if (mMD) {
+    const month = parseInt(mMD[1]);
+    const day = parseInt(mMD[2]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      let d = new Date(year, month - 1, day);
+      if (d < now) d = new Date(year + 1, month - 1, day); // 過去なら来年
+      return toDateStr(d);
+    }
+  }
+  // 「今日」「本日」
+  if (/今日|本日/.test(msg)) return toDateStr(now);
+  // 「明日」
+  if (/明日/.test(msg)) {
+    const d = new Date(now); d.setDate(d.getDate() + 1); return toDateStr(d);
+  }
+  // 「明後日」
+  if (/明後日/.test(msg)) {
+    const d = new Date(now); d.setDate(d.getDate() + 2); return toDateStr(d);
+  }
+  // 「今週〇曜」「来週〇曜」
+  const mWD = msg.match(/(今週|来週)?(月|火|水|木|金|土|日)曜/);
+  if (mWD) {
+    const wdMap = { 日:0,月:1,火:2,水:3,木:4,金:5,土:6 };
+    const target = wdMap[mWD[2]];
+    const d = new Date(now);
+    let diff = target - d.getDay();
+    if (mWD[1] === '来週') diff += 7;
+    else if (diff <= 0) diff += 7; // 今週で当日以前なら次週
+    d.setDate(d.getDate() + diff);
+    return toDateStr(d);
+  }
+  return null;
+}
+
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, { pendingAction: null, pendingData: {}, lastMessages: [], lastEmails: [] });
@@ -179,15 +227,26 @@ async function dispatch(userId, userMessage, replyToken) {
   // TODO操作をキーワードで確実に判定
   if (/TODO/i.test(userMessage)) {
     if (/追加|ついか|加えて|入れて|add/i.test(userMessage)) {
-      // TODO追加 → 正規表現でタイトルを直接抽出（AIの前回会話コンテキスト混入を防ぐ）
+      // TODO追加 → 正規表現でタイトル・期限を直接抽出（AIの前回会話コンテキスト混入を防ぐ）
       const flat = userMessage.replace(/\n|\r/g, ' ').trim();
       // 「TODOに〇〇を追加」「TODOへ〇〇を追加」「TODO〇〇追加」などに対応
       const m = flat.match(/TODO[にへ]?[\s　]*(.+?)[\s　]*[をが]?[\s　]*(追加|加えて|入れて|add)/i);
-      const title = m ? m[1].trim() : null;
-      if (title) {
+      let rawTitle = m ? m[1].trim() : null;
+      if (rawTitle) {
+        // 期限を抽出し、タイトルから除去
+        const dueDate = extractDueDate(rawTitle);
+        const cleanTitle = rawTitle
+          .replace(/(\d{1,2})[\/月](\d{1,2})日?(?:まで|までに)?/g, '')
+          .replace(/今日|本日|明日|明後日/g, '')
+          .replace(/(今週|来週)?(月|火|水|木|金|土|日)曜(?:まで|までに)?/g, '')
+          .replace(/まで(に)?/g, '')
+          .replace(/[\s　]+/g, ' ')
+          .trim();
+        const title = cleanTitle || rawTitle; // 空になったらrawTitle使用
         try {
-          const added = await todo.add(title, null, 'normal');
-          await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}`);
+          const added = await todo.add(title, dueDate, 'normal');
+          const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
+          await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
         } catch (e) {
           console.error('[todo_add] error:', e.message);
           await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
