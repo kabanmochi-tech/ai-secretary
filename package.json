@@ -1,0 +1,20 @@
+{
+  "name": "ai-secretary",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "setup": "node tools/setup.js",
+    "briefing": "node src/briefing.js",
+    "test-line": "node tools/test_line.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@line/bot-sdk": "^9.3.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.18.0",
+    "googleapis": "^140.0.0",
+    "node-cron": "^3.0.0"
+  }
+}
