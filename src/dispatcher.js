@@ -179,9 +179,22 @@ async function dispatch(userId, userMessage, replyToken) {
   // TODO操作をキーワードで確実に判定
   if (/TODO/i.test(userMessage)) {
     if (/追加|ついか|加えて|入れて|add/i.test(userMessage)) {
-      // TODO追加 → AIに任せる（タイトル・期限・優先度の抽出が必要）
-      // ただしAIへのヒントとして明示的にtodo_addを示すプレフィックスを付与しない
-      // → 下のAI処理に流れるが、正規化済みの"TODO"で正しく判定される
+      // TODO追加 → 正規表現でタイトルを直接抽出（AIの前回会話コンテキスト混入を防ぐ）
+      const flat = userMessage.replace(/\n|\r/g, ' ').trim();
+      // 「TODOに〇〇を追加」「TODOへ〇〇を追加」「TODO〇〇追加」などに対応
+      const m = flat.match(/TODO[にへ]?[\s　]*(.+?)[\s　]*[をが]?[\s　]*(追加|加えて|入れて|add)/i);
+      const title = m ? m[1].trim() : null;
+      if (title) {
+        try {
+          const added = await todo.add(title, null, 'normal');
+          await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}`);
+        } catch (e) {
+          console.error('[todo_add] error:', e.message);
+          await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
+        }
+        return;
+      }
+      // タイトルが取れない場合はAIへフォールスルー
     } else if (/完了|終わった|done|済み/i.test(userMessage)) {
       // TODO完了も同様にAIへ
     } else {
