@@ -163,7 +163,13 @@ async function dispatch(userId, userMessage, replyToken) {
 
     case 'gmail_list': {
       try {
-        const emails = await gmailClient.listUnread(params.max || 5, params.query || '');
+        // 不動産物件紹介メールを自動除外するフィルター
+        const EXCLUDE_REAL_ESTATE =
+          '-subject:(物件紹介 OR 新着物件 OR 物件情報 OR 不動産情報 OR 賃貸物件 OR 売買物件 OR マンション情報 OR "物件のご紹介" OR "新着のご案内" OR "おすすめ物件" OR "物件特集")' +
+          ' -from:(homes.co.jp OR suumo.jp OR athome.co.jp OR chintai.com OR realestate)';
+        const baseQuery = params.query || 'is:unread';
+        const query = baseQuery + ' ' + EXCLUDE_REAL_ESTATE;
+        const emails = await gmailClient.listUnread(params.max || 5, query);
         const text = formatGmailList(emails);
         await lineClient.replyMessage(replyToken, text);
       } catch (e) {
