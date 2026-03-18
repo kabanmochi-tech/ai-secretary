@@ -82,17 +82,13 @@ async function buildMailMsg(gmailClient) {
 }
 
 // TODOメッセージ
-function buildTodoMsg() {
-  const items = todo.list('pending');
-  if (!items.length) return '📋 TODO\n━━━━━━━━━━\nなし';
-  const ICON = { high: '🔴', normal: '🟡', low: '🟢' };
-  const LABEL = { high: '高', normal: '中', low: '低' };
-  const lines = [`📋 TODO（${items.length}件）`, '━━━━━━━━━━'];
-  for (const t of items) {
-    const due = t.due_date ? `（期限: ${t.due_date.slice(5).replace('-', '/')}）` : '';
-    lines.push(`${ICON[t.priority]||'🟡'} [${LABEL[t.priority]||'中'}] ${t.title}${due}`);
+async function buildTodoMsg() {
+  try {
+    const items = await todo.list('pending');
+    return await todo.formatList(items);
+  } catch {
+    return '📋 TODO: 取得できませんでした';
   }
-  return lines.join('\n');
 }
 
 // ── 朝8時ブリーフィング ──────────────────────

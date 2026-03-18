@@ -107,7 +107,7 @@ async function executePending(session, replyToken) {
 
     case 'todo_delete': {
       const { id } = pendingData;
-      todo.delete(id);
+      await todo.delete(id);
       await lineClient.replyMessage(replyToken, '🗑 削除しました');
       return;
     }
@@ -186,8 +186,8 @@ async function dispatch(userId, userMessage, replyToken) {
       // TODO完了も同様にAIへ
     } else {
       // それ以外はTODO一覧表示
-      const items = todo.list('pending');
-      await lineClient.replyMessage(replyToken, todo.formatList(items));
+      const items = await todo.list('pending');
+      await lineClient.replyMessage(replyToken, await todo.formatList(items));
       return;
     }
   }
@@ -314,19 +314,19 @@ async function dispatch(userId, userMessage, replyToken) {
     }
 
     case 'todo_add': {
-      const added = todo.add(params.title, params.due_date || null, params.priority || 'normal');
+      const added = await todo.add(params.title, params.due_date || null, params.priority || 'normal');
       await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}`);
       break;
     }
 
     case 'todo_list': {
-      const items = todo.list(params.filter || 'pending');
-      await lineClient.replyMessage(replyToken, todo.formatList(items));
+      const items = await todo.list(params.filter || 'pending');
+      await lineClient.replyMessage(replyToken, await todo.formatList(items));
       break;
     }
 
     case 'todo_done': {
-      const result = todo.complete(params.id);
+      const result = await todo.complete(params.id);
       await lineClient.replyMessage(replyToken, result.success ? '✅ 完了しました' : '該当するTODOが見つかりません');
       break;
     }
