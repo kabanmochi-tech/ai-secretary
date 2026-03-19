@@ -12,6 +12,7 @@ const path = require('path');
 const { dispatch } = require('./dispatcher');
 const { LineClient } = require('./line');
 const { startCron } = require('./briefing');
+const logger = require('./lib/logger');
 
 const app = express();
 const startTime = Date.now();
@@ -34,7 +35,7 @@ app.post('/webhook', async (req, res) => {
 
   // 署名検証
   if (!lineClient.verifySignature(body, signature)) {
-    console.warn('[webhook] 署名検証失敗');
+    logger.warn('server', '署名検証失敗');
     return res.status(400).json({ error: 'invalid signature' });
   }
 
@@ -50,12 +51,12 @@ app.post('/webhook', async (req, res) => {
         const userMessage = event.message.text;
         const replyToken = event.replyToken;
         dispatch(userId, userMessage, replyToken).catch(err => {
-          console.error('[dispatch] error:', err.message);
+          logger.error('server', 'dispatch error', { error: err.message });
         });
       }
     }
   } catch (err) {
-    console.error('[webhook] parse error:', err.message);
+    logger.error('server', 'webhook parse error', { error: err.message });
   }
 });
 
@@ -90,19 +91,68 @@ app.get('/oauth/callback', async (req, res) => {
     const { tokens } = await oauth2.getToken(code);
     const tokenPath = path.join(__dirname, '../tokens/google_token.json');
     fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
-    console.log('[oauth] トークン保存:', tokenPath);
+    logger.info('server', 'トークン保存', { path: tokenPath });
     res.send('Google認証完了。ブラウザを閉じてください。');
   } catch (err) {
-    console.error('[oauth] error:', err.message);
+    logger.error('server', 'oauth error', { error: err.message });
     res.status(500).send('認証に失敗しました: ' + err.message);
   }
 });
 
 // ============================================================
+// 起動チェック
+// ============================================================
+async function startupCheck() {
+  const results = [];
+  const required = [
+    'LINE_CHANNEL_ACCESS_TOKEN', 'LINE_CHANNEL_SECRET',
+    'LINE_USER_ID', 'ANTHROPIC_API_KEY'
+  ];
+  const optional = [
+    'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
+    'RENDER_GOOGLE_TOKEN_JSON'
+  ];
+
+  for (const key of required) {
+    results.push({ name: key, ok: !!process.env[key], fatal: true,
+      message: process.env[key] ? '✅' : '❌ 未設定（必須）' });
+  }
+  for (const key of optional) {
+    results.push({ name: key, ok: !!process.env[key], fatal: false,
+      message: process.env[key] ? '✅' : '⚠️  未設定（この機能は無効）' });
+  }
+
+  // Google token check
+  const hasGoogleToken = !!process.env.RENDER_GOOGLE_TOKEN_JSON ||
+    fs.existsSync(path.join(__dirname, '../tokens/google_token.json'));
+  results.push({ name: 'Google Token', ok: hasGoogleToken, fatal: false,
+    message: hasGoogleToken ? '✅' : '⚠️  Googleトークンなし（Calendar/Gmail/Tasks無効）' });
+
+  console.log('\n=== AI秘書 起動チェック ===');
+  for (const r of results) console.log(`${r.message} ${r.name}`);
+
+  const fatalErrors = results.filter(r => !r.ok && r.fatal);
+  if (fatalErrors.length > 0) {
+    console.error('\n❌ 必須設定が不足しています:');
+    fatalErrors.forEach(f => console.error(`   - ${f.name}`));
+  }
+
+  const disabled = results.filter(r => !r.ok && !r.fatal);
+  if (disabled.length > 0) {
+    console.warn('\n⚠️  無効化された機能:');
+    disabled.forEach(d => console.warn(`   - ${d.name}`));
+  }
+
+  console.log('\nサーバーを起動します...\n');
+  return { fatalErrors, disabledFeatures: disabled };
+}
+
+// ============================================================
 // 起動
 // ============================================================
-app.listen(PORT, () => {
-  console.log(`AI秘書 起動 PORT:${PORT} ENV:${ENV}`);
+app.listen(PORT, async () => {
+  await startupCheck();
+  logger.info('server', `AI秘書 起動 PORT:${PORT} ENV:${ENV}`);
   startCron();
 });
 

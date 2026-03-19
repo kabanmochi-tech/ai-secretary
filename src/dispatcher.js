@@ -5,11 +5,20 @@ const { GmailClient } = require('./gmail');
 const todo = require('./todo');
 const { LineClient, formatCalendarEvents, formatGmailList } = require('./line');
 const briefing = require('./briefing');
+const logger = require('./lib/logger');
 
 const sessions = new Map();
+const processingUsers = new Map(); // userId -> timestamp
 const lineClient = new LineClient();
 const calendarClient = new GoogleCalendarClient();
 const gmailClient = new GmailClient();
+
+// Unknown reply variants
+const UNKNOWN_REPLIES = [
+  'すみません、もう少し詳しく教えていただけますか？\n\n例:\n・「明日の予定教えて」\n・「未読メール見せて」\n・「TODOに○○を追加して」',
+  '申し訳ございません、うまく理解できませんでした。別の言い方でお試しください。\n\n例:\n・「今週の予定は？」\n・「田中さんへのメールを下書きして」',
+  'もう一度教えていただけますか？\n\nできること:\n📅 予定の確認・追加・変更・削除\n📧 メールの確認・返信下書き\n📋 TODOの管理',
+];
 
 const AFFIRMATIVE = /^(はい|yes|ok|OK|おけ|おk|おK|イエス|よい|よし|いいよ|いいです|送信|する|お願い|大丈夫|よろしく|確定|登録|追加|削除|合ってる|正しい|それで|問題ない)/i;
 const NEGATIVE = /^(いいえ|no|キャンセル|やめて|やめる|中止|取り消し)/i;
@@ -120,16 +129,17 @@ function extractDueDate(msg) {
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, {
-      pendingAction:    null,
-      pendingData:      {},
-      pendingAmbiguous: null,   // ambiguous_question を聞いた後の元メッセージ
-      lastMessages:     [],
-      lastEmails:       [],     // gmail_list 後に保存
-      lastTodos:        [],     // todo_list 後に保存
-      lastEvents:       [],     // calendar_list/check 後に保存
-      lastDraftId:      null,
-      lastDraftPreview: '',
-      lastDraftInfo:    null,
+      pendingAction:         null,
+      pendingData:           {},
+      pendingDataTimestamp:  null, // when pendingAction was set
+      pendingAmbiguous:      null,   // ambiguous_question を聞いた後の元メッセージ
+      lastMessages:          [],
+      lastEmails:            [],     // gmail_list 後に保存
+      lastTodos:             [],     // todo_list 後に保存
+      lastEvents:            [],     // calendar_list/check 後に保存
+      lastDraftId:           null,
+      lastDraftPreview:      '',
+      lastDraftInfo:         null,
     });
   }
   return sessions.get(userId);
@@ -167,6 +177,13 @@ function resolveEmailRef(msg, lastEmails) {
 function clearPending(session) {
   session.pendingAction = null;
   session.pendingData = {};
+  session.pendingDataTimestamp = null;
+}
+
+function setPending(session, action, data) {
+  session.pendingAction = action;
+  session.pendingData = data;
+  session.pendingDataTimestamp = Date.now();
 }
 
 function dateLabel(dateStr) {
@@ -338,7 +355,24 @@ async function resolveActionText(actionItem, session, userMessage) {
 }
 
 async function dispatch(userId, userMessage, replyToken) {
+  // Check cooldown (3 second debounce per user)
+  const lastProcess = processingUsers.get(userId);
+  if (lastProcess && Date.now() - lastProcess < 3000) {
+    await lineClient.replyMessage(replyToken, '処理中です、少々お待ちください ⏳');
+    return;
+  }
+  processingUsers.set(userId, Date.now());
+
   const session = getSession(userId);
+
+  // Check pendingAction expiry (5 minutes)
+  if (session.pendingAction && session.pendingDataTimestamp) {
+    if (Date.now() - session.pendingDataTimestamp > 5 * 60 * 1000) {
+      clearPending(session);
+      await lineClient.replyMessage(replyToken, 'お待たせしました。前の操作がタイムアウトしました。もう一度お願いいたします。');
+      return;
+    }
+  }
 
   // 表記ゆれを正規化（To do / to-do → TODO）
   userMessage = userMessage.replace(/[Tt]o[\s\-]?[Dd]o/g, 'TODO');
@@ -387,8 +421,7 @@ async function dispatch(userId, userMessage, replyToken) {
         draftInfo.replyToId || null
       );
       const previewMsg = `署名を追加しました。送信しますか？\n\n─────\n${draft.preview}…\n─────`;
-      session.pendingAction = 'gmail_send';
-      session.pendingData = { draftId: draft.draftId };
+      setPending(session, 'gmail_send', { draftId: draft.draftId });
       session.lastDraftId = draft.draftId;
       session.lastDraftPreview = draft.preview;
       await lineClient.replyMessage(replyToken, previewMsg);
@@ -423,8 +456,7 @@ async function dispatch(userId, userMessage, replyToken) {
       return;
     }
     if (/削除|消して|消す|delete/i.test(userMessage)) {
-      session.pendingAction = 'todo_delete';
-      session.pendingData = { id: todoRef.todo.id, title: todoRef.todo.title };
+      setPending(session, 'todo_delete', { id: todoRef.todo.id, title: todoRef.todo.title });
       await lineClient.replyMessage(replyToken, `「${todoRef.todo.title}」を削除しますか？`);
       return;
     }
@@ -444,8 +476,7 @@ async function dispatch(userId, userMessage, replyToken) {
         const subject = original.subject.startsWith('Re:') ? original.subject : `Re: ${original.subject}`;
         const draft = await gmailClient.createDraft(original.from, subject, bodyText, latestEmail.id);
         const previewMsg = `以下の内容で下書き保存しました。送信しますか？\n\n宛先: ${original.from}\n件名: ${subject}\n─────\n${draft.preview}…\n─────`;
-        session.pendingAction = 'gmail_send';
-        session.pendingData = { draftId: draft.draftId };
+        setPending(session, 'gmail_send', { draftId: draft.draftId });
         session.lastDraftId = draft.draftId;
         session.lastDraftPreview = draft.preview;
         session.lastDraftInfo = { to: original.from, subject, replyToId: latestEmail.id };
@@ -469,8 +500,7 @@ async function dispatch(userId, userMessage, replyToken) {
       const subject = original.subject.startsWith('Re:') ? original.subject : `Re: ${original.subject}`;
       const draft = await gmailClient.createDraft(original.from, subject, bodyText, refEmail.id);
       const previewMsg = `以下の内容で下書き保存しました。送信しますか？\n\n宛先: ${original.from}\n件名: ${subject}\n─────\n${draft.preview}…\n─────`;
-      session.pendingAction = 'gmail_send';
-      session.pendingData = { draftId: draft.draftId };
+      setPending(session, 'gmail_send', { draftId: draft.draftId });
       session.lastDraftId = draft.draftId;
       session.lastDraftPreview = draft.preview;
       session.lastDraftInfo = { to: original.from, subject, replyToId: refEmail.id };
@@ -519,15 +549,14 @@ async function dispatch(userId, userMessage, replyToken) {
             return;
           }
           const previewList = toDelete.map(t => `・${t.title}`).join('\n');
-          session.pendingAction = 'todo_delete_by_title';
-          session.pendingData = { toDelete };
+          setPending(session, 'todo_delete_by_title', { toDelete });
           await lineClient.replyMessage(replyToken,
             `以下の${toDelete.length}件のTODOを削除しますか？\n━━━━━━━━━━\n${previewList}`
           );
           return;
         }
       } catch (e) {
-        console.error('[todo_delete keyword] error:', e.message);
+        logger.error('dispatcher', 'todo_delete keyword error', { error: e.message });
         await lineClient.replyMessage(replyToken, `TODO削除に失敗しました: ${e.message}`);
         return;
       }
@@ -563,7 +592,7 @@ async function dispatch(userId, userMessage, replyToken) {
           const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
           await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
         } catch (e) {
-          console.error('[todo_add] error:', e.message);
+          logger.error('dispatcher', 'todo_add error', { error: e.message });
           await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
         }
         return;
@@ -628,7 +657,7 @@ async function dispatch(userId, userMessage, replyToken) {
         const text = await resolveActionText(actionItem, session, userMessage);
         if (text) results.push(text);
       } catch (e) {
-        console.error('[multi-action] error:', e.message);
+        logger.error('dispatcher', 'multi-action error', { error: e.message });
       }
     }
     if (results.length > 0) {
@@ -691,14 +720,12 @@ async function dispatch(userId, userMessage, replyToken) {
         const conflicts = await calendarClient.checkConflict(params.start, params.end);
         if (conflicts.length > 0) {
           const conflictNames = conflicts.map(c => c.title).join('、');
-          session.pendingAction = 'calendar_add_force';
-          session.pendingData = params;
+          setPending(session, 'calendar_add_force', params);
           await lineClient.replyMessage(replyToken, `⚠️ 重複があります\n「${conflictNames}」が入っています。それでも追加しますか？`);
           return;
         }
         const label = formatEventLabel(params);
-        session.pendingAction = 'calendar_add';
-        session.pendingData = params;
+        setPending(session, 'calendar_add', params);
         await lineClient.replyMessage(replyToken, `「${params.title}」を\n${label}に追加してよいですか？`);
       } catch (e) {
         await lineClient.replyMessage(replyToken, `カレンダー追加に失敗しました: ${e.message}`);
@@ -717,8 +744,7 @@ async function dispatch(userId, userMessage, replyToken) {
         if (found.length === 1) {
           const ev = found[0];
           const label = formatEventLabel({ start: ev.start, end: ev.end });
-          session.pendingAction = 'calendar_delete';
-          session.pendingData = { eventId: ev.id };
+          setPending(session, 'calendar_delete', { eventId: ev.id });
           await lineClient.replyMessage(replyToken, `この予定を削除しますか？\n「${ev.title}」\n${label}`);
         } else {
           // 複数ヒット → 最初の3件を表示して絞り込み依頼
@@ -762,8 +788,7 @@ async function dispatch(userId, userMessage, replyToken) {
         const newStart = updates.start || ev.start;
         const newEnd   = updates.end   || ev.end;
         const label = formatEventLabel({ start: newStart, end: newEnd });
-        session.pendingAction = 'calendar_update';
-        session.pendingData = { eventId: ev.id, updates };
+        setPending(session, 'calendar_update', { eventId: ev.id, updates });
         await lineClient.replyMessage(replyToken,
           `「${ev.title}」を以下の内容に変更してよいですか？\n${label}`);
       } catch (e) {
@@ -797,8 +822,7 @@ async function dispatch(userId, userMessage, replyToken) {
         const subject = params.subject || '（件名なし）';
         const draft = await gmailClient.createDraft(params.to, subject, bodyText, params.reply_to_id || null);
         const previewMsg = `以下の内容で下書き保存しました。送信しますか？\n\n─────\n${draft.preview}…\n─────`;
-        session.pendingAction = 'gmail_send';
-        session.pendingData = { draftId: draft.draftId };
+        setPending(session, 'gmail_send', { draftId: draft.draftId });
         session.lastDraftId = draft.draftId;
         session.lastDraftPreview = draft.preview;
         session.lastDraftInfo = { to: params.to, subject: params.subject, replyToId: params.reply_to_id || null };
@@ -857,7 +881,7 @@ async function dispatch(userId, userMessage, replyToken) {
           : msg;
         await lineClient.replyMessage(replyToken, displayMsg);
       } catch (e) {
-        console.error('[todo_list] error:', e.message);
+        logger.error('dispatcher', 'todo_list error', { error: e.message });
         await lineClient.replyMessage(replyToken, `TODO一覧の取得に失敗しました: ${e.message}`);
       }
       break;
@@ -912,8 +936,7 @@ async function dispatch(userId, userMessage, replyToken) {
     }
 
     case 'todo_delete': {
-      session.pendingAction = 'todo_delete';
-      session.pendingData = { id: params.id };
+      setPending(session, 'todo_delete', { id: params.id });
       await lineClient.replyMessage(replyToken, 'このTODOを削除しますか？');
       break;
     }
@@ -958,13 +981,12 @@ async function dispatch(userId, userMessage, replyToken) {
         }
 
         const previewList = toDelete.map(t => `・${t.title}`).join('\n');
-        session.pendingAction = 'todo_delete_by_title';
-        session.pendingData = { toDelete };
+        setPending(session, 'todo_delete_by_title', { toDelete });
         await lineClient.replyMessage(replyToken,
           `以下の${toDelete.length}件のTODOを削除しますか？\n━━━━━━━━━━\n${previewList}`
         );
       } catch (e) {
-        console.error('[todo_delete_by_title] error:', e.message);
+        logger.error('dispatcher', 'todo_delete_by_title error', { error: e.message });
         await lineClient.replyMessage(replyToken, `TODO削除に失敗しました: ${e.message}`);
       }
       break;
@@ -1000,7 +1022,7 @@ async function dispatch(userId, userMessage, replyToken) {
           `✅ ${addedTitles.length}件のTODOを登録しました\n━━━━━━━━━━\n${todoList}${calMsg}`
         );
       } catch (e) {
-        console.error('[todo_setup_recurring] error:', e.message);
+        logger.error('dispatcher', 'todo_setup_recurring error', { error: e.message });
         await lineClient.replyMessage(replyToken, `TODO登録に失敗しました: ${e.message}`);
       }
       break;
@@ -1076,7 +1098,7 @@ async function dispatch(userId, userMessage, replyToken) {
         }
         await lineClient.replyMessage(replyToken, `📝 メモを追加しました\n${target.title}\n\n「${note}」`);
       } catch (e) {
-        console.error('[todo_note] error:', e.message);
+        logger.error('dispatcher', 'todo_note error', { error: e.message });
         await lineClient.replyMessage(replyToken, `メモの追加に失敗しました: ${e.message}`);
       }
       break;
@@ -1096,7 +1118,7 @@ async function dispatch(userId, userMessage, replyToken) {
 
     case 'unknown':
     default: {
-      const helpText = reply || `すみません、もう少し具体的に教えていただけますか？\n\n例:\n・「明日の予定教えて」\n・「未読メール見せて」\n・「TODOに○○を追加して」`;
+      const helpText = reply || UNKNOWN_REPLIES[Math.floor(Math.random() * UNKNOWN_REPLIES.length)];
       await lineClient.replyMessage(replyToken, helpText);
     }
   }

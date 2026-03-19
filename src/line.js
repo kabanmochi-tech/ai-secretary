@@ -1,7 +1,35 @@
 require('dotenv').config();
 const { messagingApi, validateSignature } = require('@line/bot-sdk');
+const logger = require('./lib/logger');
 
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
+const MAX_MSG_LENGTH = 4500;
+const MAX_REPLY_MESSAGES = 5;
+
+function splitMessage(text, maxLength = MAX_MSG_LENGTH) {
+  // Reserve space for page number suffix like "\n（10/10）" = up to 10 chars
+  const SUFFIX_RESERVE = 12;
+  const effectiveMax = maxLength - SUFFIX_RESERVE;
+  if (text.length <= maxLength) return [text];
+  const parts = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= effectiveMax) {
+      parts.push(remaining);
+      break;
+    }
+    // Find last newline within effectiveMax
+    let cutAt = remaining.lastIndexOf('\n', effectiveMax);
+    if (cutAt <= 0) cutAt = effectiveMax; // No newline found, hard cut
+    parts.push(remaining.slice(0, cutAt));
+    remaining = remaining.slice(cutAt).replace(/^\n/, '');
+  }
+  // Add page numbers if multiple parts
+  if (parts.length > 1) {
+    return parts.map((p, i) => `${p}\n（${i + 1}/${parts.length}）`);
+  }
+  return parts;
+}
 
 class LineClient {
   constructor() {
@@ -13,22 +41,66 @@ class LineClient {
   }
 
   async replyMessage(replyToken, text) {
-    return this.client.replyMessage({
-      replyToken,
-      messages: [{ type: 'text', text }],
-    });
+    if (!text || typeof text !== 'string') text = '（メッセージなし）';
+    const parts = splitMessage(text);
+    const messages = parts.slice(0, MAX_REPLY_MESSAGES).map(t => ({ type: 'text', text: t }));
+    try {
+      return await this.client.replyMessage({ replyToken, messages });
+    } catch (e) {
+      // If replyToken expired, fall back to pushMessage
+      if (e?.statusCode === 400 || e?.message?.includes('Invalid reply token')) {
+        logger.warn('line', 'replyToken期限切れ、pushMessageにフォールバック');
+        for (const part of parts) {
+          await this.pushMessage(part).catch(() => {});
+        }
+        return;
+      }
+      throw e;
+    }
   }
 
   async replyMessages(replyToken, texts) {
-    const messages = texts.slice(0, 5).map(text => ({ type: 'text', text }));
-    return this.client.replyMessage({ replyToken, messages });
+    const messages = texts.slice(0, MAX_REPLY_MESSAGES).map(text => ({ type: 'text', text }));
+    try {
+      return await this.client.replyMessage({ replyToken, messages });
+    } catch (e) {
+      if (e?.statusCode === 400 || e?.message?.includes('Invalid reply token')) {
+        logger.warn('line', 'replyMessages: replyToken期限切れ、pushMessageにフォールバック');
+        for (const text of texts) {
+          await this.pushMessage(text).catch(() => {});
+        }
+        return;
+      }
+      throw e;
+    }
   }
 
   async pushMessage(text) {
-    return this.client.pushMessage({
-      to: this.userId,
-      messages: [{ type: 'text', text }],
-    });
+    if (!this.userId) {
+      logger.warn('line', 'LINE_USER_ID未設定 pushMessageスキップ');
+      return;
+    }
+    if (!text || typeof text !== 'string') text = '（メッセージなし）';
+    const parts = splitMessage(text);
+    for (const part of parts) {
+      await this._pushWithRetry({ to: this.userId, messages: [{ type: 'text', text: part }] });
+    }
+  }
+
+  async _pushWithRetry(payload, maxRetries = 3) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.client.pushMessage(payload);
+      } catch (e) {
+        if (attempt < maxRetries && (e?.statusCode === 429 || e?.statusCode >= 500)) {
+          const wait = e?.statusCode === 429 ? 1000 : 500;
+          logger.warn('line', `pushMessage失敗リトライ ${attempt + 1}`, { status: e?.statusCode });
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw e;
+      }
+    }
   }
 
   async pushMessages(texts) {
@@ -38,7 +110,7 @@ class LineClient {
     }
     for (const chunk of chunks) {
       const messages = chunk.map(text => ({ type: 'text', text }));
-      await this.client.pushMessage({ to: this.userId, messages });
+      await this._pushWithRetry({ to: this.userId, messages });
     }
   }
 
@@ -123,4 +195,4 @@ function _shortDate(dateStr) {
   }
 }
 
-module.exports = { LineClient, formatCalendarEvents, formatGmailList };
+module.exports = { LineClient, formatCalendarEvents, formatGmailList, splitMessage };
