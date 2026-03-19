@@ -348,8 +348,58 @@ async function resolveActionText(actionItem, session, userMessage) {
       return formatGmailList(emails);
     }
 
+    // ── 書き込み系: 確認不要で即実行（multi-action モードでのみ呼ばれる）──
+
+    case 'todo_add': {
+      // 単一TODO追加（確認なし）
+      const added = await todo.add(params.title, params.due_date || null, params.priority || 'normal');
+      const dueStr = params.due_date
+        ? `\n期限: ${params.due_date.slice(5).replace('-','/')}`
+        : '';
+      return `✅ TODOに追加しました\n${added.title}${dueStr}`;
+    }
+
+    case 'todo_setup_recurring': {
+      // 複数TODO一括追加（カレンダーリマインダーはmulti-actionでは別actionに任せる）
+      const todos = params.todos || [];
+      if (!todos.length) return null;
+      const addedTitles = [];
+      for (const item of todos) {
+        const added = await todo.add(item.title, item.due_date || null, item.priority || 'normal');
+        addedTitles.push(added.title);
+      }
+      const todoList = addedTitles.map((t, i) => `${i + 1}. ${t}`).join('\n');
+      return `✅ ${addedTitles.length}件のTODOを登録しました\n━━━━━━━━━━\n${todoList}`;
+    }
+
+    case 'calendar_add': {
+      // 単一予定追加（multi-action時は確認なしで即追加）
+      await calendarClient.addEventForce(params.title, params.start, params.end, params.description || '');
+      const label = formatEventLabel(params);
+      return `📅 カレンダーに追加しました\n「${params.title}」${label ? '\n' + label : ''}`;
+    }
+
+    case 'calendar_add_multi': {
+      // 複数予定一括追加
+      const events = params.events || [];
+      if (!events.length) return null;
+      const added = [];
+      const failed = [];
+      for (const ev of events) {
+        try {
+          await calendarClient.addEventForce(ev.title, ev.start, ev.end, ev.description || '');
+          added.push(`・${ev.title} ${formatEventLabel({ start: ev.start, end: ev.end })}`);
+        } catch (err) {
+          failed.push(`・${ev.title}（失敗: ${err.message}）`);
+        }
+      }
+      let msg = `📅 ${added.length}件の予定を追加しました\n${added.join('\n')}`;
+      if (failed.length) msg += `\n\n⚠️ 失敗:\n${failed.join('\n')}`;
+      return msg;
+    }
+
     default:
-      // 単一actionでの確認が必要な操作は multi-action では実行しない
+      // 削除・更新・送信など破壊的操作は multi-action では実行しない（単一action で確認フローへ）
       return null;
   }
 }
