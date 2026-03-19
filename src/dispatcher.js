@@ -20,6 +20,54 @@ const EXCLUDE_REAL_ESTATE =
   ' -from:(homes.co.jp OR suumo.jp OR athome.co.jp OR chintai.com OR realestate)';
 
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
+const RRULE_WD = { SU:0, MO:1, TU:2, WE:3, TH:4, FR:5, SA:6 };
+const RRULE_WD_JA = { SU:'日', MO:'月', TU:'火', WE:'水', TH:'木', FR:'金', SA:'土' };
+
+// RRULE文字列から次回実施日を計算（FREQ=MONTHLY;BYDAY=2FR など）
+function calcNextRruleDate(rrule) {
+  const now = jstNow();
+  const mByday = rrule.match(/BYDAY=(-?\d+)([A-Z]{2})/);
+  if (!mByday) {
+    // フォールバック: 今日
+    return toDateStr(now);
+  }
+  const nth = parseInt(mByday[1]);
+  const wd = RRULE_WD[mByday[2]] ?? 5; // デフォルト金曜
+
+  function findNthWeekdayInMonth(year, month, n, weekday) {
+    let d = new Date(year, month, 1);
+    let count = 0;
+    while (d.getMonth() === month) {
+      if (d.getDay() === weekday) {
+        count++;
+        if (count === n) return d;
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    return null;
+  }
+
+  let d = findNthWeekdayInMonth(now.getFullYear(), now.getMonth(), nth, wd);
+  if (!d || d <= now) {
+    // 来月を使う
+    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    d = findNthWeekdayInMonth(next.getFullYear(), next.getMonth(), nth, wd);
+  }
+  return d ? toDateStr(d) : toDateStr(now);
+}
+
+// RRULE を日本語に変換
+function formatRrule(rrule) {
+  const mByday = rrule && rrule.match(/BYDAY=(-?\d+)([A-Z]{2})/);
+  if (mByday) {
+    const nth = parseInt(mByday[1]);
+    const wdJa = RRULE_WD_JA[mByday[2]] || mByday[2];
+    return `毎月第${nth}${wdJa}曜日`;
+  }
+  if (/FREQ=WEEKLY/.test(rrule)) return '毎週';
+  if (/FREQ=MONTHLY/.test(rrule)) return '毎月';
+  return rrule;
+}
 
 function jstNow() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
@@ -226,14 +274,17 @@ async function dispatch(userId, userMessage, replyToken) {
 
   // TODO操作をキーワードで確実に判定
   if (/TODO/i.test(userMessage)) {
-    if (/追加|ついか|加えて|入れて|add/i.test(userMessage)) {
-      // TODO追加 → 正規表現でタイトル・期限を直接抽出（AIの前回会話コンテキスト混入を防ぐ）
+    if (/追加|ついか|加えて|入れて|add|登録/i.test(userMessage)) {
+      // シンプルな1件追加（「TODOに〇〇を追加」形式）のみ直接処理
+      // 複数項目・リマインド付きはAIへフォールスルー
       const flat = userMessage.replace(/\n|\r/g, ' ').trim();
-      // 「TODOに〇〇を追加」「TODOへ〇〇を追加」「TODO〇〇追加」などに対応
-      const m = flat.match(/TODO[にへ]?[\s　]*(.+?)[\s　]*[をが]?[\s　]*(追加|加えて|入れて|add)/i);
-      let rawTitle = m ? m[1].trim() : null;
-      if (rawTitle) {
-        // 期限を抽出し、タイトルから除去
+      const hasMultipleItems = /[①-⑩]|（\d）|\(\d\)/.test(userMessage);
+      const hasReminder = /リマインド|毎月|繰り返し|第[一二三四五]?[1-5]?金曜|毎週/.test(userMessage);
+      const m = !hasMultipleItems && !hasReminder
+        ? flat.match(/TODO[にへ]?[\s　]*(.+?)[\s　]*[をが]?[\s　]*(追加|加えて|入れて|add|登録)/i)
+        : null;
+      if (m) {
+        let rawTitle = m[1].trim();
         const dueDate = extractDueDate(rawTitle);
         const cleanTitle = rawTitle
           .replace(/(\d{1,2})[\/月](\d{1,2})日?(?:まで|までに)?/g, '')
@@ -242,7 +293,7 @@ async function dispatch(userId, userMessage, replyToken) {
           .replace(/まで(に)?/g, '')
           .replace(/[\s　]+/g, ' ')
           .trim();
-        const title = cleanTitle || rawTitle; // 空になったらrawTitle使用
+        const title = cleanTitle || rawTitle;
         try {
           const added = await todo.add(title, dueDate, 'normal');
           const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
@@ -253,11 +304,11 @@ async function dispatch(userId, userMessage, replyToken) {
         }
         return;
       }
-      // タイトルが取れない場合はAIへフォールスルー
-    } else if (/完了|終わった|done|済み/i.test(userMessage)) {
-      // TODO完了も同様にAIへ
-    } else {
-      // それ以外はTODO一覧表示
+      // 複数項目・リマインド付き・タイトル取れない場合はAIへフォールスルー
+    } else if (/完了|終わった|done|済み/.test(userMessage)) {
+      // TODO完了もAIへフォールスルー
+    } else if (/見せて|一覧|リスト|確認|表示|は？|教えて/.test(userMessage)) {
+      // 明示的に一覧を要求した場合のみ直接表示
       try {
         const items = await todo.list('pending');
         await lineClient.replyMessage(replyToken, await todo.formatList(items));
@@ -266,6 +317,7 @@ async function dispatch(userId, userMessage, replyToken) {
       }
       return;
     }
+    // それ以外はAIへフォールスルー（複雑な要求はAIが解釈）
   }
 
   // メールキーワードは確実にメール一覧へ（todo追加・完了などと混同しないよう限定）
@@ -425,6 +477,63 @@ async function dispatch(userId, userMessage, replyToken) {
       session.pendingAction = 'todo_delete';
       session.pendingData = { id: params.id };
       await lineClient.replyMessage(replyToken, 'このTODOを削除しますか？');
+      break;
+    }
+
+    case 'todo_setup_recurring': {
+      // 複数TODO一括登録 + 毎月繰り返しカレンダーリマインダー作成
+      try {
+        const todos = params.todos || [];
+        const addedTitles = [];
+        for (const item of todos) {
+          const added = await todo.add(item.title, item.due_date || null, item.priority || 'normal');
+          addedTitles.push(added.title);
+        }
+
+        let calMsg = '';
+        if (params.reminder_rrule) {
+          // 次の第N曜日を計算してリマインダーを作成
+          const startDate = calcNextRruleDate(params.reminder_rrule);
+          await calendarClient.addRecurringEvent(
+            params.reminder_title || '毎月定例リマインド',
+            params.reminder_rrule,
+            startDate,
+            '09:00',
+            '09:30',
+            params.reminder_description || addedTitles.join('\n')
+          );
+          calMsg = `\n\n📅 カレンダーに毎月の繰り返しリマインドを登録しました\n「${params.reminder_title || '毎月定例リマインド'}」`;
+        }
+
+        const todoList = addedTitles.map((t, i) => `${i+1}. ${t}`).join('\n');
+        await lineClient.replyMessage(replyToken,
+          `✅ ${addedTitles.length}件のTODOを登録しました\n━━━━━━━━━━\n${todoList}${calMsg}`
+        );
+      } catch (e) {
+        console.error('[todo_setup_recurring] error:', e.message);
+        await lineClient.replyMessage(replyToken, `TODO登録に失敗しました: ${e.message}`);
+      }
+      break;
+    }
+
+    case 'calendar_add_recurring': {
+      // 繰り返しカレンダーイベントの作成
+      try {
+        const startDate = params.start_date || calcNextRruleDate(params.rrule || 'FREQ=MONTHLY;BYDAY=2FR');
+        const result = await calendarClient.addRecurringEvent(
+          params.title,
+          params.rrule,
+          startDate,
+          params.start_time || '09:00',
+          params.end_time || '09:30',
+          params.description || ''
+        );
+        await lineClient.replyMessage(replyToken,
+          `✅ 毎月の繰り返しリマインドを登録しました\n📅 ${result.event.title}\n（${formatRrule(params.rrule)}）`
+        );
+      } catch (e) {
+        await lineClient.replyMessage(replyToken, `カレンダー登録に失敗しました: ${e.message}`);
+      }
       break;
     }
 

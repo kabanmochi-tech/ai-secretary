@@ -126,6 +126,26 @@ class GoogleCalendarClient {
     return { success: true };
   }
 
+  // 毎月第N曜日などの繰り返しカレンダーイベントを作成
+  // rrule例: "FREQ=MONTHLY;BYDAY=2FR" （毎月第2金曜）
+  async addRecurringEvent(title, rrule, startDate, startTime = '09:00', endTime = '09:30', description = '') {
+    const calendar = this._getCalendar();
+    const res = await calendar.events.insert({
+      calendarId: this.calendarId,
+      requestBody: {
+        summary: title,
+        description,
+        start: { dateTime: `${startDate}T${startTime}:00`, timeZone: 'Asia/Tokyo' },
+        end:   { dateTime: `${startDate}T${endTime}:00`,   timeZone: 'Asia/Tokyo' },
+        recurrence: [`RRULE:${rrule}`],
+      },
+    });
+    return {
+      success: true,
+      event: { id: res.data.id, title: res.data.summary, rrule },
+    };
+  }
+
   async getTodayEvents() {
     const today = new Date().toLocaleDateString('ja-JP', {
       timeZone: 'Asia/Tokyo',
