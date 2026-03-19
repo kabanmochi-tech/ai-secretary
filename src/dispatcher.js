@@ -512,15 +512,24 @@ async function dispatch(userId, userMessage, replyToken) {
   }
 
   // TODO操作をキーワードで確実に判定
-  if (/TODO/i.test(userMessage)) {
-    // ── 削除を最優先でルーティング（「下記のtodo消して」が誤登録されるバグ対策）──
+  // ※ 「TODO」という文字列がなくても、TODOリスト形式（🟡[中]...）があればTODOコンテキストと判定
+  const hasTodoKeyword = /TODO/i.test(userMessage);
+  const hasTodoListFormat = /[🔴🟡🟢]\s*\[(?:高|中|低)\]/.test(userMessage);
+  if (hasTodoKeyword || hasTodoListFormat) {
+    // ── 削除を最優先でルーティング（「下記のtodo消して」「これ消して＋TODO一覧」バグ対策）──
     if (/消して|削除|消去|delete/i.test(userMessage)) {
       try {
-        // 「2. タイトル」「③ タイトル」「・タイトル」などの箇条書きからタイトルを抽出
+        // タイトル抽出：TODOフォーマット行（🟡[中] タイトル）と番号付き箇条書きの両方に対応
         const titleLines = userMessage
           .split(/\n/)
-          .map(l => l.replace(/^[\s　]*[\d①-⑩]+[\.。、\s　]/, '').trim())
-          .filter(l => l.length > 2 && !/TODO|消して|削除|下記/i.test(l));
+          .map(l => {
+            // TODO一覧フォーマット: 🟡 [中] タイトル（期限: X/X）
+            const todoFmt = l.match(/[🔴🟡🟢]\s*\[(?:高|中|低)\]\s*(.+?)(?:（期限:.*?）)?\s*$/);
+            if (todoFmt) return todoFmt[1].trim();
+            // 番号付きリスト: 1. タイトル、① タイトル、・タイトル
+            return l.replace(/^[\s　]*(?:[\d①-⑩]+[\.。、\s　]|[・•]\s*)/, '').trim();
+          })
+          .filter(l => l.length > 2 && !/TODO|消して|削除|下記|これ/i.test(l));
 
         // 「完了済み」を削除対象にする場合は completed フィルターを使う
         const deleteCompleted = /完了済み|済みタスク|completedタスク/i.test(userMessage);
