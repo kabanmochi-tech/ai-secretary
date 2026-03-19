@@ -100,6 +100,9 @@ RRULE早見表:
     let text = response.content[0].text.trim();
     // マークダウンコードブロックを除去
     text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    // 前後に説明文が混入した場合でもJSONオブジェクトを抽出
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) text = jsonMatch[0].trim();
     console.log('[ai.parseIntent] raw:', text.slice(0, 200));
     const parsed = JSON.parse(text);
     return parsed;

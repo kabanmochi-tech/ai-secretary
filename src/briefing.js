@@ -65,9 +65,13 @@ function buildWeekMsg(events, fromLabel) {
 }
 
 // 未読メールメッセージ
+const EXCLUDE_REAL_ESTATE =
+  '-subject:(物件紹介 OR 新着物件 OR 物件情報 OR 不動産情報 OR 賃貸物件 OR 売買物件 OR マンション情報 OR "物件のご紹介" OR "新着のご案内" OR "おすすめ物件" OR "物件特集")' +
+  ' -from:(homes.co.jp OR suumo.jp OR athome.co.jp OR chintai.com OR realestate)';
+
 async function buildMailMsg(gmailClient) {
   try {
-    const emails = await gmailClient.listUnread(5, 'in:inbox is:unread');
+    const emails = await gmailClient.listUnread(5, `in:inbox is:unread ${EXCLUDE_REAL_ESTATE}`);
     if (!emails.length) return '📧 未読メール（受信ボックス）\n━━━━━━━━━━\nなし';
     const nums = ['①','②','③','④','⑤'];
     const lines = [`📧 未読メール（${emails.length}件）`, '━━━━━━━━━━'];

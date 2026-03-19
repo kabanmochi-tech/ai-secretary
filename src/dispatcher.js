@@ -208,6 +208,22 @@ async function executePending(session, replyToken) {
       return;
     }
 
+    case 'todo_delete_by_title': {
+      const { toDelete } = pendingData;
+      try {
+        for (const t of toDelete) {
+          await todo.delete(t.id);
+        }
+        const deletedList = toDelete.map(t => `・${t.title}`).join('\n');
+        await lineClient.replyMessage(replyToken,
+          `🗑 ${toDelete.length}件のTODOを削除しました\n${deletedList}`
+        );
+      } catch (e) {
+        await lineClient.replyMessage(replyToken, `TODO削除に失敗しました: ${e.message}`);
+      }
+      return;
+    }
+
     default:
       await lineClient.replyMessage(replyToken, 'キャンセルしました');
   }
@@ -481,34 +497,39 @@ async function dispatch(userId, userMessage, replyToken) {
     }
 
     case 'todo_delete_by_title': {
-      // タイトルの部分一致でTODOを検索して削除（IDを知らなくても削除可能）
-      const targetTitles = params.titles || [];
-      if (!targetTitles.length) {
-        await lineClient.replyMessage(replyToken, '削除するTODOが指定されていません');
-        break;
-      }
+      // タイトルの部分一致でTODOを検索して削除（確認ステップあり）
+      const rawTitles = (params.titles || []).filter(t => t && t.trim().length > 0);
+      const isDeleteAll = !rawTitles.length || /全部|全て|すべて|all/i.test(userMessage);
+
       try {
         const allTodos = await todo.list('pending');
-        const toDelete = allTodos.filter(t =>
-          targetTitles.some(target =>
-            t.title.includes(target) || target.includes(t.title) ||
-            // 【タグ】を除いたコアタイトルで比較
-            t.title.replace(/^【[^】]*】/, '').trim().includes(target) ||
-            target.replace(/^【[^】]*】/, '').trim().includes(t.title.replace(/^【[^】]*】/, '').trim())
-          )
-        );
+        const toDelete = isDeleteAll
+          ? allTodos
+          : allTodos.filter(t =>
+              rawTitles.some(target => {
+                const coreTitle = t.title.replace(/^【[^】]*】/, '').trim();
+                const coreTarget = target.replace(/^【[^】]*】/, '').trim();
+                // 空文字は絶対にマッチさせない（全削除防止）
+                if (!coreTarget) return false;
+                return t.title.includes(target) ||
+                  coreTitle.includes(coreTarget) ||
+                  coreTarget.includes(coreTitle);
+              })
+            );
+
         if (!toDelete.length) {
           await lineClient.replyMessage(replyToken,
-            `該当するTODOが見つかりませんでした\n検索ワード: ${targetTitles.join('、')}`
+            `該当するTODOが見つかりませんでした\n検索ワード: ${rawTitles.join('、') || '(全件)'}`
           );
           break;
         }
-        for (const t of toDelete) {
-          await todo.delete(t.id);
-        }
-        const deletedList = toDelete.map(t => `・${t.title}`).join('\n');
+
+        // 削除前に確認を求める
+        const previewList = toDelete.map(t => `・${t.title}`).join('\n');
+        session.pendingAction = 'todo_delete_by_title';
+        session.pendingData = { toDelete };
         await lineClient.replyMessage(replyToken,
-          `🗑 ${toDelete.length}件のTODOを削除しました\n${deletedList}`
+          `以下の${toDelete.length}件のTODOを削除しますか？\n━━━━━━━━━━\n${previewList}`
         );
       } catch (e) {
         console.error('[todo_delete_by_title] error:', e.message);
@@ -575,11 +596,13 @@ async function dispatch(userId, userMessage, replyToken) {
     }
 
     case 'briefing': {
+      // replyTokenは30秒で失効するため、まず受付返答してからpushで送信
+      await lineClient.replyMessage(replyToken, '📋 ブリーフィングを生成中です…');
       try {
         const messages = await briefing.generateMorning();
-        await lineClient.replyMessages(replyToken, messages);
+        await lineClient.pushMessages(messages);
       } catch (e) {
-        await lineClient.replyMessage(replyToken, `ブリーフィング生成に失敗しました: ${e.message}`);
+        await lineClient.pushMessage(`ブリーフィング生成に失敗しました: ${e.message}`);
       }
       break;
     }
