@@ -66,7 +66,7 @@ function buildWeekMsg(events, fromLabel) {
 
 // 未読メールメッセージ
 const EXCLUDE_REAL_ESTATE =
-  '-subject:(物件紹介 OR 新着物件 OR 物件情報 OR 不動産情報 OR 賃貸物件 OR 売買物件 OR マンション情報 OR "物件のご紹介" OR "新着のご案内" OR "おすすめ物件" OR "物件特集")' +
+  '-subject:(物件紹介 OR 新着物件 OR 物件情報 OR 不動産情報 OR 賃貸物件 OR 売買物件 OR マンション情報 OR "物件のご紹介" OR "新着のご案内" OR "おすすめ物件" OR "物件特集" OR テラスハウス OR アパート OR 利回り OR 満室 OR 空室 OR 戸数 OR 収益物件 OR 投資物件)' +
   ' -from:(homes.co.jp OR suumo.jp OR athome.co.jp OR chintai.com OR realestate)';
 
 async function buildMailMsg(gmailClient) {
