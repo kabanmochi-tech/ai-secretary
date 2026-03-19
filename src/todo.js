@@ -34,12 +34,16 @@ function decodePriority(notes) {
 }
 
 // Google Tasks の日付形式: RFC3339（due は "YYYY-MM-DDT00:00:00.000Z"）
+// ※ JST midnight を UTC に変換すると日付が1日ずれるため、
+//    意図した日付を UTC midnight で送信することで日付を正確に保持する
 function dueDateToRfc(dateStr) {
   if (!dateStr) return undefined;
-  return new Date(dateStr + 'T00:00:00+09:00').toISOString();
+  return `${dateStr}T00:00:00.000Z`; // midnight UTC = 日付が正確に保持される
 }
 function rfcToDueDate(rfc) {
   if (!rfc) return null;
+  // Google Tasks は due を "YYYY-MM-DDT00:00:00.000Z" で返す
+  // midnight UTC の場合、スライスするだけで正確な日付が取れる
   return rfc.slice(0, 10);
 }
 
@@ -141,4 +145,45 @@ async function formatList(todosOrPromise) {
   return lines.join('\n');
 }
 
-module.exports = { add, list, complete, delete: deleteTodo, getTodayDue, formatList };
+// キーワードでTODOを検索してメモ（notes）を更新する
+async function addNote(keyword, note) {
+  const tasks = getTasks();
+  const allPending = await list('pending');
+  const target = keyword
+    ? allPending.find(t =>
+        t.title.includes(keyword) ||
+        keyword.includes(t.title.replace(/^【[^】]*】/, '').trim())
+      )
+    : null;
+  if (!target) return null;
+  // 優先度プレフィックスを維持しつつメモを追記
+  const priorityPrefix = encodePriority(target.priority || 'normal');
+  const newNotes = `${priorityPrefix}\n📝 ${note}`;
+  await tasks.tasks.patch({
+    tasklist: '@default',
+    task: target.id,
+    requestBody: { notes: newNotes },
+  });
+  return target;
+}
+
+// キーワードでTODOを検索して完了にする
+async function completeByKeyword(keyword) {
+  const tasks = getTasks();
+  const allPending = await list('pending');
+  const target = keyword
+    ? allPending.find(t =>
+        t.title.includes(keyword) ||
+        keyword.includes(t.title.replace(/^【[^】]*】/, '').trim())
+      )
+    : null;
+  if (!target) return null;
+  await tasks.tasks.patch({
+    tasklist: '@default',
+    task: target.id,
+    requestBody: { status: 'completed' },
+  });
+  return target;
+}
+
+module.exports = { add, list, complete, completeByKeyword, addNote, delete: deleteTodo, getTodayDue, formatList };

@@ -22,7 +22,7 @@ async function parseIntent(userMessage, context = {}) {
 {
   "action": "calendar_list"|"calendar_add"|"calendar_add_multi"|"calendar_update"|"calendar_delete"|"calendar_add_recurring"|
             "gmail_list"|"gmail_draft"|"gmail_send"|"gmail_read"|
-            "todo_add"|"todo_list"|"todo_done"|"todo_done_by_num"|"todo_delete"|"todo_delete_by_title"|"todo_note"|"todo_setup_recurring"|
+            "todo_add"|"todo_list"|"todo_done"|"todo_done_by_num"|"todo_done_by_keyword"|"todo_delete"|"todo_delete_by_title"|"todo_note"|"todo_setup_recurring"|
             "briefing"|"unknown",
   "params": {},
   "reply": "ユーザーへの返答",
@@ -44,6 +44,7 @@ action別のparams:
 - todo_list: { filter: "all|today|pending|completed" }
 - todo_done: { id: "" }
 - todo_done_by_num: { num: 1 }
+- todo_done_by_keyword: { keyword: "タスクタイトルの一部" }
 - todo_delete: { id: "" }
 - todo_delete_by_title: { titles: ["削除するタイトルの一部（部分一致でOK）"] }
 - todo_note: { keyword: "タスクタイトルの一部", note: "追加するメモ内容" }
@@ -90,6 +91,8 @@ RRULE早見表:
 - 「〇〇のTODO消して」「下記のtodo消して」→ todo_delete_by_title（titlesにタイトルの一部を入れる）
   ※ タイトルのIDは不明なので必ずtodo_delete_by_titleを使うこと。todo_deleteは使わない
 - 「①のタスクを完了」→ todo_done_by_num, num: 1
+- 「提案書のタスクを完了にして」「○○を終わらせた」など、タイトル名でTODOを完了したい場合 → todo_done_by_keyword, keyword: "タスクタイトルの一部"
+- todo_done（id指定）は使わない。IDはユーザーには不明なため、代わりに todo_done_by_keyword を使うこと
 - 「2番と3番を消して」→ titlesに具体的なタイトル文字列（番号ではなく内容）を入れる
 - 「タスクにメモを追加」「ノートを追加」「覚書を追加」→ todo_note（keywordにタスク名の一部、noteにメモ内容）
 

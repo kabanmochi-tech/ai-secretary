@@ -275,6 +275,12 @@ async function fetchAndShowEmails(session, replyToken, max = 5) {
   await lineClient.replyMessage(replyToken, formatGmailList(emails));
 }
 
+// メッセージから「N件」「N通」を抽出する
+function parseEmailCount(msg) {
+  const m = msg.match(/(\d+)[件通]/);
+  return m ? Math.min(parseInt(m[1]), 10) : 5; // 最大10件に制限
+}
+
 async function dispatch(userId, userMessage, replyToken) {
   const session = getSession(userId);
 
@@ -410,6 +416,57 @@ async function dispatch(userId, userMessage, replyToken) {
 
   // TODO操作をキーワードで確実に判定
   if (/TODO/i.test(userMessage)) {
+    // ── 削除を最優先でルーティング（「下記のtodo消して」が誤登録されるバグ対策）──
+    if (/消して|削除|消去|delete/i.test(userMessage)) {
+      try {
+        // 「2. タイトル」「③ タイトル」「・タイトル」などの箇条書きからタイトルを抽出
+        const titleLines = userMessage
+          .split(/\n/)
+          .map(l => l.replace(/^[\s　]*[\d①-⑩]+[\.。、\s　]/, '').trim())
+          .filter(l => l.length > 2 && !/TODO|消して|削除|下記/i.test(l));
+
+        // 「完了済み」を削除対象にする場合は completed フィルターを使う
+        const deleteCompleted = /完了済み|済みタスク|completedタスク/i.test(userMessage);
+        const filter = deleteCompleted ? 'completed' : 'pending';
+        const isDeleteAll = titleLines.length === 0 && /全部|全て|すべて|all/i.test(userMessage);
+
+        if (isDeleteAll || titleLines.length > 0 || deleteCompleted) {
+          const allTodos = await todo.list(filter);
+          const toDelete = isDeleteAll || (deleteCompleted && titleLines.length === 0)
+            ? allTodos
+            : allTodos.filter(t =>
+                titleLines.some(target => {
+                  const coreTitle = t.title.replace(/^【[^】]*】/, '').trim();
+                  const coreTarget = target.replace(/^【[^】]*】/, '').trim();
+                  if (!coreTarget) return false;
+                  return t.title.includes(target) ||
+                    coreTitle.includes(coreTarget) ||
+                    coreTarget.includes(coreTitle);
+                })
+              );
+
+          if (!toDelete.length) {
+            await lineClient.replyMessage(replyToken,
+              `該当するTODOが見つかりませんでした\n検索ワード: ${titleLines.join('、') || '(全件)'}`
+            );
+            return;
+          }
+          const previewList = toDelete.map(t => `・${t.title}`).join('\n');
+          session.pendingAction = 'todo_delete_by_title';
+          session.pendingData = { toDelete };
+          await lineClient.replyMessage(replyToken,
+            `以下の${toDelete.length}件のTODOを削除しますか？\n━━━━━━━━━━\n${previewList}`
+          );
+          return;
+        }
+      } catch (e) {
+        console.error('[todo_delete keyword] error:', e.message);
+        await lineClient.replyMessage(replyToken, `TODO削除に失敗しました: ${e.message}`);
+        return;
+      }
+      // タイトルが抽出できなかった場合はAIへフォールスルー
+    }
+
     if (/追加|ついか|加えて|入れて|add|登録/i.test(userMessage)) {
       // シンプルな1件追加（「TODOに〇〇を追加」形式）のみ直接処理
       // 複数項目・リマインド付きはAIへフォールスルー
@@ -466,7 +523,8 @@ async function dispatch(userId, userMessage, replyToken) {
   // メールキーワードは確実にメール一覧へ（todo追加・完了などと混同しないよう限定）
   if (/未読メール|メール見せて|メールチェック|inbox/i.test(userMessage)) {
     try {
-      await fetchAndShowEmails(session, replyToken);
+      const maxCount = parseEmailCount(userMessage);
+      await fetchAndShowEmails(session, replyToken, maxCount);
     } catch (e) {
       await lineClient.replyMessage(replyToken, `メールの取得に失敗しました: ${e.message}`);
     }
@@ -690,6 +748,27 @@ async function dispatch(userId, userMessage, replyToken) {
       break;
     }
 
+    case 'todo_done_by_keyword': {
+      // タイトルの一部でTODOを検索して完了にする（「提案書のタスクを完了にして」など）
+      const keyword = params.keyword || '';
+      if (!keyword) {
+        await lineClient.replyMessage(replyToken, 'どのタスクを完了にするか教えてください');
+        break;
+      }
+      try {
+        const completed = await todo.completeByKeyword(keyword);
+        if (!completed) {
+          await lineClient.replyMessage(replyToken,
+            `「${keyword}」に該当するタスクが見つかりません。\nTODOリストを確認してください。`);
+          break;
+        }
+        await lineClient.replyMessage(replyToken, `✅ 完了しました\n${completed.title}`);
+      } catch (e) {
+        await lineClient.replyMessage(replyToken, `TODO完了に失敗しました: ${e.message}`);
+      }
+      break;
+    }
+
     case 'todo_done_by_num': {
       // ①②③ 番号指定で完了
       const num = parseInt(params.num) - 1;
@@ -717,17 +796,28 @@ async function dispatch(userId, userMessage, replyToken) {
     case 'todo_delete_by_title': {
       // タイトルの部分一致でTODOを検索して削除（確認ステップあり）
       const rawTitles = (params.titles || []).filter(t => t && t.trim().length > 0);
-      const isDeleteAll = !rawTitles.length || /全部|全て|すべて|all/i.test(userMessage);
+      // isDeleteAll: 明示的に「全部」系キーワードがある場合のみ全削除
+      // （titlesが空でも「全部」キーワードがなければ全削除しない安全設計）
+      const isDeleteAll = rawTitles.length === 0 && /全部|全て|すべて|all/i.test(userMessage);
+      // 完了済みタスクを削除対象にする場合
+      const deleteCompleted = /完了済み|済みタスク|completedタスク/i.test(userMessage);
+      const filter = deleteCompleted ? 'completed' : 'pending';
+
+      if (!isDeleteAll && rawTitles.length === 0 && !deleteCompleted) {
+        await lineClient.replyMessage(replyToken,
+          '削除するタスクを指定してください\n例: 「提案書のTODOを消して」「完了済みタスクを削除して」'
+        );
+        break;
+      }
 
       try {
-        const allTodos = await todo.list('pending');
-        const toDelete = isDeleteAll
+        const allTodos = await todo.list(filter);
+        const toDelete = isDeleteAll || (deleteCompleted && rawTitles.length === 0)
           ? allTodos
           : allTodos.filter(t =>
               rawTitles.some(target => {
                 const coreTitle = t.title.replace(/^【[^】]*】/, '').trim();
                 const coreTarget = target.replace(/^【[^】]*】/, '').trim();
-                // 空文字は絶対にマッチさせない（全削除防止）
                 if (!coreTarget) return false;
                 return t.title.includes(target) ||
                   coreTitle.includes(coreTarget) ||
@@ -742,7 +832,6 @@ async function dispatch(userId, userMessage, replyToken) {
           break;
         }
 
-        // 削除前に確認を求める
         const previewList = toDelete.map(t => `・${t.title}`).join('\n');
         session.pendingAction = 'todo_delete_by_title';
         session.pendingData = { toDelete };
@@ -846,7 +935,7 @@ async function dispatch(userId, userMessage, replyToken) {
     }
 
     case 'todo_note': {
-      // タスクにメモ/覚書を追加（Google TasksのnotesフィールドにJST保存）
+      // タスクにメモ/覚書を追加（todo.addNote() に委譲して認証重複を解消）
       try {
         const keyword = params.keyword || '';
         const note = params.note || '';
@@ -854,26 +943,12 @@ async function dispatch(userId, userMessage, replyToken) {
           await lineClient.replyMessage(replyToken, 'メモの内容を指定してください');
           break;
         }
-        const allTodos = await todo.list('pending');
-        const target = keyword
-          ? allTodos.find(t => t.title.includes(keyword) || keyword.includes(t.title.replace(/^【[^】]*】/, '').trim()))
-          : null;
+        const target = await todo.addNote(keyword, note);
         if (!target) {
-          await lineClient.replyMessage(replyToken, `「${keyword}」に該当するタスクが見つかりません。\nTODO一覧を確認してください。`);
+          await lineClient.replyMessage(replyToken,
+            `「${keyword}」に該当するタスクが見つかりません。\nTODO一覧を確認してください。`);
           break;
         }
-        // Google Tasks の notes フィールドを更新（優先度情報を維持しつつメモを追記）
-        const { google: g } = require('googleapis');
-        const tokenJson = process.env.RENDER_GOOGLE_TOKEN_JSON
-          ? JSON.parse(process.env.RENDER_GOOGLE_TOKEN_JSON)
-          : JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '../tokens/google_token.json'), 'utf8'));
-        const oauth2 = new g.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/oauth/callback');
-        oauth2.setCredentials(tokenJson);
-        const tasksApi = g.tasks({ version: 'v1', auth: oauth2 });
-        // 現在のnotes（優先度プレフィックス）に追記
-        const priorityPrefix = `priority:${target.priority || 'normal'}`;
-        const newNotes = `${priorityPrefix}\n📝 ${note}`;
-        await tasksApi.tasks.patch({ tasklist: '@default', task: target.id, requestBody: { notes: newNotes } });
         await lineClient.replyMessage(replyToken, `📝 メモを追加しました\n${target.title}\n\n「${note}」`);
       } catch (e) {
         console.error('[todo_note] error:', e.message);

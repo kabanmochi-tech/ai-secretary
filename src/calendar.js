@@ -206,7 +206,10 @@ class GoogleCalendarClient {
   }
 
   async getTomorrowEvents() {
-    const tomorrow = new Date(Date.now() + 86400000).toLocaleDateString('ja-JP', {
+    // JST基準で「明日」の日付を取得（Date.now()+86400000はDST/UTC境界で誤る可能性があるため修正）
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+    now.setDate(now.getDate() + 1);
+    const tomorrow = now.toLocaleDateString('ja-JP', {
       timeZone: 'Asia/Tokyo',
       year: 'numeric',
       month: '2-digit',
