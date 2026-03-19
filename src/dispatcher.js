@@ -120,15 +120,16 @@ function extractDueDate(msg) {
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, {
-      pendingAction: null,
-      pendingData: {},
-      lastMessages: [],
-      lastEmails: [],
-      lastTodos: [],
-      lastEvents: [],
-      lastDraftId: null,
+      pendingAction:    null,
+      pendingData:      {},
+      pendingAmbiguous: null,   // ambiguous_question を聞いた後の元メッセージ
+      lastMessages:     [],
+      lastEmails:       [],     // gmail_list 後に保存
+      lastTodos:        [],     // todo_list 後に保存
+      lastEvents:       [],     // calendar_list/check 後に保存
+      lastDraftId:      null,
       lastDraftPreview: '',
-      lastDraftInfo: null,
+      lastDraftInfo:    null,
     });
   }
   return sessions.get(userId);
@@ -281,11 +282,77 @@ function parseEmailCount(msg) {
   return m ? Math.min(parseInt(m[1]), 10) : 5; // 最大10件に制限
 }
 
+// ────────────────────────────────────────────────────────────
+// 複数action一括実行用：結果テキストを返す（replyMessage は呼ばない）
+// read-only系の action のみ対応（add/update/delete は確認が必要なため単一actionで処理）
+// ────────────────────────────────────────────────────────────
+async function resolveActionText(actionItem, session, userMessage) {
+  const { action, params } = actionItem;
+
+  switch (action) {
+    case 'calendar_list': {
+      const rangeDays = params.range_days || 1;
+      let events = await calendarClient.listEvents(params.date, rangeDays);
+      if (/残り|これから|あと|まだ/.test(userMessage) && rangeDays === 1) {
+        const nowJst = jstNow();
+        events = events.filter(e => e.end && new Date(e.end) > nowJst);
+      }
+      session.lastEvents = events; // 文脈保持
+      const label = rangeDays > 1 ? `${dateLabel(params.date)}〜` : dateLabel(params.date);
+      return formatCalendarEvents(events, label, rangeDays);
+    }
+
+    case 'calendar_check': {
+      const events = await calendarClient.listEvents(params.date, 1);
+      session.lastEvents = events;
+      const dl = dateLabel(params.date);
+      if (!events.length) return `📅 ${dl}は終日空いています ✅`;
+      const lines = [`📅 ${dl}の埋まっている時間:`, '━━━━━━━━━━'];
+      for (const e of events) {
+        const s = e.start ? new Date(e.start).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+        const en = e.end ? new Date(e.end).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+        lines.push(`${s && en ? `${s}〜${en} ` : ''}${e.title}`);
+      }
+      return lines.join('\n');
+    }
+
+    case 'todo_list': {
+      const filter = params.filter || 'pending';
+      const items = await todo.list(filter);
+      if (filter === 'pending') session.lastTodos = items;
+      const msg = await todo.formatList(items);
+      return filter === 'completed' ? msg.replace('📋 TODO', '✅ 完了済みTODO') : msg;
+    }
+
+    case 'gmail_list': {
+      const baseQuery = params.query || 'in:inbox is:unread';
+      const emails = await gmailClient.listUnread(params.max || 5, `${baseQuery} ${EXCLUDE_REAL_ESTATE}`);
+      session.lastEmails = emails;
+      return formatGmailList(emails);
+    }
+
+    default:
+      // 単一actionでの確認が必要な操作は multi-action では実行しない
+      return null;
+  }
+}
+
 async function dispatch(userId, userMessage, replyToken) {
   const session = getSession(userId);
 
   // 表記ゆれを正規化（To do / to-do → TODO）
   userMessage = userMessage.replace(/[Tt]o[\s\-]?[Dd]o/g, 'TODO');
+
+  // ── ambiguous_question への回答処理 ──────────────────────
+  // 前回「田中さんの件というのは？」などを返した場合、元メッセージ+回答でコンテキストに追加して再解釈
+  if (session.pendingAmbiguous) {
+    const { originalMessage } = session.pendingAmbiguous;
+    session.pendingAmbiguous = null;
+    // 元のメッセージをlastMessagesに追加してコンテキストとして渡す
+    session.lastMessages.push({ role: 'user', content: originalMessage });
+    session.lastMessages.push({ role: 'assistant', content: 'どのような内容でしょうか？' });
+    // userMessage（ユーザーの回答）はそのまま続けて処理
+  }
 
   // 肯定応答
   if (session.pendingAction && AFFIRMATIVE.test(userMessage.trim())) {
@@ -533,14 +600,48 @@ async function dispatch(userId, userMessage, replyToken) {
 
   // 意図解釈（AI）
   const intent = await ai.parseIntent(userMessage, {
-    recentMessages: session.lastMessages,
-    pendingAction: session.pendingAction,
+    recentMessages:       session.lastMessages,
+    pendingAction:        session.pendingAction,
+    lastMentionedEmails:  session.lastEmails  || [],
+    lastMentionedEvents:  session.lastEvents  || [],
   });
 
   session.lastMessages.push({ role: 'user', content: userMessage });
-  if (session.lastMessages.length > 6) session.lastMessages.shift();
+  if (session.lastMessages.length > 10) session.lastMessages.shift();
 
-  const { action, params, reply } = intent;
+  // ── ambiguous（判断不能）応答の処理 ─────────────────────
+  if (intent.ambiguous && intent.ambiguous_question) {
+    session.pendingAmbiguous = { originalMessage: userMessage };
+    await lineClient.replyMessage(replyToken, intent.ambiguous_question);
+    return;
+  }
+
+  // ── 複数action の順次実行 ────────────────────────────────
+  const actions = Array.isArray(intent.actions)
+    ? intent.actions
+    : [{ action: intent.action || 'unknown', params: intent.params || {}, needs_confirm: false }];
+
+  if (actions.length > 1) {
+    const results = [];
+    for (const actionItem of actions) {
+      try {
+        const text = await resolveActionText(actionItem, session, userMessage);
+        if (text) results.push(text);
+      } catch (e) {
+        console.error('[multi-action] error:', e.message);
+      }
+    }
+    if (results.length > 0) {
+      await lineClient.replyMessages(replyToken, results.slice(0, 5));
+    } else {
+      await lineClient.replyMessage(replyToken, intent.reply || 'すみません、もう一度おっしゃっていただけますか？');
+    }
+    return;
+  }
+
+  // ── 単一action の処理 ───────────────────────────────────
+  const { action, params } = actions[0];
+  const reply = intent.reply;
 
   switch (action) {
     case 'calendar_list': {
@@ -552,9 +653,33 @@ async function dispatch(userId, userMessage, replyToken) {
           const nowJst = jstNow();
           events = events.filter(e => e.end && new Date(e.end) > nowJst);
         }
+        session.lastEvents = events; // 文脈引き継ぎ用に保存
         const label = rangeDays > 1 ? `${dateLabel(params.date)}〜` : dateLabel(params.date);
         const text = formatCalendarEvents(events, label, rangeDays);
         await lineClient.replyMessage(replyToken, text);
+      } catch (e) {
+        await lineClient.replyMessage(replyToken, `カレンダーの取得に失敗しました: ${e.message}`);
+      }
+      break;
+    }
+
+    case 'calendar_check': {
+      // 特定日の空き確認（予定一覧＋空き時間帯を表示）
+      try {
+        const events = await calendarClient.listEvents(params.date, 1);
+        session.lastEvents = events;
+        const dl = dateLabel(params.date);
+        if (!events.length) {
+          await lineClient.replyMessage(replyToken, `📅 ${dl}は終日空いています ✅`);
+          break;
+        }
+        const lines = [`📅 ${dl}の状況:`, '━━━━━━━━━━'];
+        for (const e of events) {
+          const s  = e.start ? new Date(e.start).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+          const en = e.end   ? new Date(e.end).toLocaleTimeString('ja-JP',   { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+          lines.push(`🔴 ${s && en ? `${s}〜${en} ` : ''}${e.title}`);
+        }
+        await lineClient.replyMessage(replyToken, lines.join('\n'));
       } catch (e) {
         await lineClient.replyMessage(replyToken, `カレンダーの取得に失敗しました: ${e.message}`);
       }

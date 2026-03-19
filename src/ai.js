@@ -4,102 +4,277 @@ const Anthropic = require('@anthropic-ai/sdk');
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
 
+const WEEKDAY_JA = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+
+function padZ(n) { return String(n).padStart(2, '0'); }
+function jstNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+}
+function toJstIso(d) {
+  return `${d.getFullYear()}-${padZ(d.getMonth()+1)}-${padZ(d.getDate())}T${padZ(d.getHours())}:${padZ(d.getMinutes())}:00+09:00`;
+}
+function toDateStr(d) {
+  return `${d.getFullYear()}-${padZ(d.getMonth()+1)}-${padZ(d.getDate())}`;
+}
+function getMondayOfWeek(d) {
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const mon = new Date(d);
+  mon.setDate(d.getDate() + diff);
+  return mon;
+}
+function nextWeekdayFrom(base, targetDow) {
+  const d = new Date(base);
+  let diff = targetDow - d.getDay();
+  if (diff <= 0) diff += 7;
+  d.setDate(d.getDate() + diff);
+  return toDateStr(d);
+}
+
 const FALLBACK = {
-  action: 'unknown',
-  params: {},
+  actions: [{ action: 'unknown', params: {}, needs_confirm: false }],
   reply: 'すみません、もう一度おっしゃっていただけますか？',
-  needs_confirm: false,
+  ambiguous: false,
+  ambiguous_question: '',
 };
 
 async function parseIntent(userMessage, context = {}) {
-  const { recentMessages = [], pendingAction = null } = context;
-  const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+  const {
+    recentMessages = [],
+    pendingAction = null,
+    lastMentionedEmails = [],
+    lastMentionedEvents = [],
+  } = context;
 
-  const systemPrompt = `あなたはAI秘書システムのディスパッチャーです。
-ユーザーのメッセージを解析し、必ず以下のJSON形式のみで応答してください。
-マークダウンのコードブロックや余計な文字は絶対に出力しないこと。
+  // ── 日付計算（リアルタイム）────────────────────────────
+  const now = jstNow();
+  const nowIso    = toJstIso(now);
+  const todayStr  = toDateStr(now);
+  const dowIdx    = now.getDay(); // 0=日〜6=土
+  const dowFull   = WEEKDAY_JA[dowIdx];
+
+  const thisMonday = getMondayOfWeek(now);
+  const thisMondayStr = toDateStr(thisMonday);
+
+  const nextMonday = new Date(thisMonday); nextMonday.setDate(thisMonday.getDate() + 7);
+  const nextMondayStr = toDateStr(nextMonday);
+
+  const weekAfterNext = new Date(thisMonday); weekAfterNext.setDate(thisMonday.getDate() + 14);
+  const weekAfterNextStr = toDateStr(weekAfterNext);
+
+  const tomorrow  = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  const dayAfter  = new Date(now); dayAfter.setDate(now.getDate() + 2);
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  const dayBefore = new Date(now); dayBefore.setDate(now.getDate() - 2);
+
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const lastDayStr = toDateStr(lastDay);
+  const daysLeftInMonth = lastDay.getDate() - now.getDate() + 1;
+
+  const nextMonth1 = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const nextMonthStr = toDateStr(nextMonth1);
+
+  // 直近の各曜日
+  const wd = {
+    日: nextWeekdayFrom(now, 0), 月: nextWeekdayFrom(now, 1), 火: nextWeekdayFrom(now, 2),
+    水: nextWeekdayFrom(now, 3), 木: nextWeekdayFrom(now, 4), 金: nextWeekdayFrom(now, 5),
+    土: nextWeekdayFrom(now, 6),
+  };
+
+  // ── コンテキスト情報 ────────────────────────────────────
+  let ctxSection = '';
+  if (lastMentionedEmails.length > 0) {
+    const list = lastMentionedEmails.slice(0, 3)
+      .map((e, i) => `  ${i+1}. id="${e.id}" from="${e.from}" subject="${e.subject}"`)
+      .join('\n');
+    ctxSection += `\n### 直前に表示したメール（返信時に reply_to_id に使用）\n${list}\n`;
+  }
+  if (lastMentionedEvents.length > 0) {
+    const list = lastMentionedEvents.slice(0, 3)
+      .map((e, i) => `  ${i+1}. title="${e.title}" start="${(e.start||'').slice(0,16)}"`)
+      .join('\n');
+    ctxSection += `\n### 直前に表示した予定（変更・削除時に keyword に使用）\n${list}\n`;
+  }
+
+  // ── システムプロンプト ───────────────────────────────────
+  const systemPrompt = `あなたはAI秘書の自然言語解析エンジンです。ユーザーの口語・あいまい表現を解析し、必ず以下のJSON形式【のみ】で応答してください。マークダウンコードブロック・説明文は一切出力禁止。
+
+現在日時(JST): ${nowIso}
+今日の曜日: ${dowFull}（インデックス ${dowIdx}、0=日 1=月 2=火 3=水 4=木 5=金 6=土）
+${ctxSection}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## レスポンスJSON形式
 
 {
-  "action": "calendar_list"|"calendar_add"|"calendar_add_multi"|"calendar_update"|"calendar_delete"|"calendar_add_recurring"|
-            "gmail_list"|"gmail_draft"|"gmail_send"|"gmail_read"|
-            "todo_add"|"todo_list"|"todo_done"|"todo_done_by_num"|"todo_done_by_keyword"|"todo_delete"|"todo_delete_by_title"|"todo_note"|"todo_setup_recurring"|
-            "briefing"|"unknown",
-  "params": {},
-  "reply": "ユーザーへの返答",
-  "needs_confirm": true|false
+  "actions": [
+    { "action": "アクション名", "params": {}, "needs_confirm": false }
+  ],
+  "reply": "ユーザーへの一言返答（日本語・簡潔に）",
+  "ambiguous": false,
+  "ambiguous_question": ""
 }
 
-action別のparams:
-- calendar_list: { date: "YYYY-MM-DD", range_days: 1 }
-- calendar_add: { title: "", start: "YYYY-MM-DDTHH:mm:ss+09:00", end: "YYYY-MM-DDTHH:mm:ss+09:00", description: "" }
-- calendar_delete: { keyword: "予定タイトルの一部", date: "YYYY-MM-DD（わかる場合のみ、省略可）" }
-- calendar_update: { keyword: "予定タイトルの一部", date: "YYYY-MM-DD（わかる場合のみ）", new_title: "（変更なければ省略）", new_start: "YYYY-MM-DDTHH:mm:ss+09:00（変更なければ省略）", new_end: "YYYY-MM-DDTHH:mm:ss+09:00（変更なければ省略）" }
-- calendar_add_multi: { events: [{ title: "", start: "YYYY-MM-DDTHH:mm:ss+09:00", end: "YYYY-MM-DDTHH:mm:ss+09:00", description: "" }] }
-- calendar_add_recurring: { title: "", rrule: "FREQ=MONTHLY;BYDAY=2FR", start_date: "YYYY-MM-DD", start_time: "09:00", end_time: "09:30", description: "" }
-- gmail_list: { max: 5, query: "" }
-- gmail_draft: { to: "", subject: "", body: "", reply_to_id: "" }
-- gmail_send: { draft_id: "" }
-- gmail_read: { message_id: "" }
-- todo_add: { title: "", due_date: "YYYY-MM-DD or null", priority: "high|normal|low" }
-- todo_list: { filter: "all|today|pending|completed" }
-- todo_done: { id: "" }
-- todo_done_by_num: { num: 1 }
-- todo_done_by_keyword: { keyword: "タスクタイトルの一部" }
-- todo_delete: { id: "" }
-- todo_delete_by_title: { titles: ["削除するタイトルの一部（部分一致でOK）"] }
-- todo_note: { keyword: "タスクタイトルの一部", note: "追加するメモ内容" }
-- todo_setup_recurring: {
-    todos: [{ title: "", priority: "high|normal|low" }],
-    reminder_title: "カレンダーリマインダーのタイトル",
-    reminder_rrule: "FREQ=MONTHLY;BYDAY=2FR",
-    reminder_description: "リマインド内容の説明"
-  }
-- briefing: {}
-- unknown: {}
+- actions: 配列。通常1要素。「予定もTODOも教えて」など複合指示は複数要素
+- ambiguous: 意図が判断不能な場合 true
+- ambiguous_question: ambiguous=true の時のみ、次に何を聞けば判断できるかを記載
 
-calendar_listのrange_days:
-- 「今日」「明日」→ range_days: 1
-- 「今週」→ range_days: 7、date: 今週月曜日
-- 「明日から3日」→ range_days: 3
-- 「今月」→ range_days: 30
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 利用可能アクション
 
-RRULE早見表:
-- 毎月第2金曜 → FREQ=MONTHLY;BYDAY=2FR
-- 毎月第3金曜 → FREQ=MONTHLY;BYDAY=3FR
-- 毎月末日 → FREQ=MONTHLY;BYMONTHDAY=-1
-- 毎週月曜 → FREQ=WEEKLY;BYDAY=MO
-- 「第N曜日」→ BYDAY=NFR（F=金曜, MO=月, TU=火, WE=水, TH=木, FR=金, SA=土, SU=日）
+action                | 主なparams
+----------------------|------------------------------------------------------------
+calendar_list         | date:"YYYY-MM-DD", range_days:1〜30
+calendar_add          | title, start:"YYYY-MM-DDTHH:mm:ss+09:00", end:"...", description
+calendar_add_multi    | events:[{title,start,end,description}]
+calendar_update       | keyword, date(省略可), new_title, new_start, new_end
+calendar_delete       | keyword, date(省略可)
+calendar_check        | date:"YYYY-MM-DD"（その日の空き状況確認）
+calendar_add_recurring| title, rrule, start_date, start_time, end_time, description
+gmail_list            | max:5, query:""
+gmail_draft           | to, subject, body, reply_to_id
+gmail_send            | draft_id
+gmail_read            | message_id
+todo_add              | title, due_date:"YYYY-MM-DD or null", priority:"high|normal|low"
+todo_list             | filter:"all|today|pending|completed"
+todo_done_by_keyword  | keyword
+todo_done_by_num      | num:1
+todo_delete_by_title  | titles:[]
+todo_note             | keyword, note
+todo_setup_recurring  | todos:[], reminder_title, reminder_rrule, reminder_description
+briefing              | {}
+unknown               | {}
 
-判断の例（必ずこれに従うこと）:
-- 「予定」「スケジュール」「カレンダー」→ calendar_list or calendar_add
-- 「リマインダー」「リマインドをセット」→ calendar_add（予定として登録する）
-- 「朝イチ」→ 09:00 として扱う
-- 「メール」「未読」「受信」「inbox」→ gmail_list
-- 「TODO」「タスク」「やること」→ todo_list or todo_add
-- 「未読メールみせて」→ gmail_list（絶対にcalendar系にしない）
-- 「今日の予定」→ calendar_list（絶対にgmail系にしない）
-- 「予定を変更/移動/ずらして」→ calendar_update（keywordに予定名、new_start/new_endに新しい時刻）
-- 「〇〇を削除/消して」（カレンダー） → calendar_delete（keywordに予定名）
-- 「〇〇日と△△日に予定を追加」「〇〇と△△の2件を追加」など複数の異なる日時への追加 → calendar_add_multi（eventsに全件を入れる）
-- 「毎月」「繰り返し」+ TODO複数項目 + リマインド → todo_setup_recurring
-- 「①②③」形式で複数タスク + 登録 → todo_setup_recurring（todosに全項目を入れる）
-- 「登録して」「とうろく」「追加して」→ todo_add または todo_setup_recurring
-- 「第2金曜」「第二金曜」→ reminder_rrule: "FREQ=MONTHLY;BYDAY=2FR"
-- 「第3金曜」「第三金曜」→ FREQ=MONTHLY;BYDAY=3FR
-- TODO一覧表示は「TODO見せて」「TODO一覧」「TODOは？」など明示的に確認を求めた場合のみ
-- 「済みタスク/完了タスクを見せて」→ todo_list, filter: "completed"
-- 「〇〇のTODO消して」「下記のtodo消して」→ todo_delete_by_title（titlesにタイトルの一部を入れる）
-  ※ タイトルのIDは不明なので必ずtodo_delete_by_titleを使うこと。todo_deleteは使わない
-- 「①のタスクを完了」→ todo_done_by_num, num: 1
-- 「提案書のタスクを完了にして」「○○を終わらせた」など、タイトル名でTODOを完了したい場合 → todo_done_by_keyword, keyword: "タスクタイトルの一部"
-- todo_done（id指定）は使わない。IDはユーザーには不明なため、代わりに todo_done_by_keyword を使うこと
-- 「2番と3番を消して」→ titlesに具体的なタイトル文字列（番号ではなく内容）を入れる
-- 「タスクにメモを追加」「ノートを追加」「覚書を追加」→ todo_note（keywordにタスク名の一部、noteにメモ内容）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 日時変換（計算済み — 必ずこの値を使うこと）
 
-今日の日時(JST): ${now}`;
+| 表現              | 日付/値                                      |
+|-------------------|----------------------------------------------|
+| 今日              | ${todayStr}                                  |
+| 明日              | ${toDateStr(tomorrow)}                       |
+| 明後日            | ${toDateStr(dayAfter)}                       |
+| 昨日              | ${toDateStr(yesterday)}                      |
+| 一昨日            | ${toDateStr(dayBefore)}                      |
+| 今週（月〜日）    | date:${thisMondayStr}, range_days:7          |
+| 来週              | date:${nextMondayStr}, range_days:7          |
+| 再来週            | date:${weekAfterNextStr}, range_days:7       |
+| 今月残り          | date:${todayStr}, range_days:${daysLeftInMonth} |
+| 来月              | date:${nextMonthStr}, range_days:30          |
+| 月末              | ${lastDayStr}                                |
+| 直近の月曜        | ${wd['月']}                                  |
+| 直近の火曜        | ${wd['火']}                                  |
+| 直近の水曜        | ${wd['水']}                                  |
+| 直近の木曜        | ${wd['木']}                                  |
+| 直近の金曜        | ${wd['金']}                                  |
+| 直近の土曜        | ${wd['土']}                                  |
+| 直近の日曜        | ${wd['日']}                                  |
+| 今週の月曜        | ${thisMondayStr}                             |
+| 今週の金曜        | ${wd['金']}（今週内）                        |
+| 来週の月曜        | ${nextMondayStr}                             |
 
+### 時刻変換
+| 表現           | 時刻  |
+|----------------|-------|
+| 朝一・朝イチ   | 09:00 |
+| 午前中         | 10:00 |
+| 昼・ランチ     | 12:00 |
+| 午後（指定なし）| 13:00|
+| 夕方           | 17:00 |
+| 夜             | 19:00 |
+| 夜遅く         | 21:00 |
+| X時            | X:00（ビジネス時間外かつ曖昧な場合は午後として解釈）|
+| X時半          | X:30  |
+| X時Y分         | X:Y   |
+| X分後          | 現在時刻+X分 |
+| 1時間後        | 現在時刻+60分 |
+
+### デフォルト期間
+- calendar_add: end が未指定 → start + 1時間
+- リマインダー: end → start + 30分
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## あいまい表現 → action マッピング
+
+### カレンダー系
+| ユーザー表現の例                          | action          | 主なparams                           |
+|-------------------------------------------|-----------------|--------------------------------------|
+| 今週どんな感じ？詰まってる？ヤバい？      | calendar_list   | date:${thisMondayStr}, range_days:7  |
+| 来週ヤバい？忙しい？詰まってる？          | calendar_list   | date:${nextMondayStr}, range_days:7  |
+| 明後日空いてる？フリー？                  | calendar_check  | date:${toDateStr(dayAfter)}          |
+| 木曜何か入ってる？あったっけ？            | calendar_list   | date:${wd['木']}, range_days:1       |
+| 田中さんとMTG、水曜15時でどう？          | calendar_add    | 重複確認あり                         |
+| 来週月曜の件、30分早めて                  | calendar_update | keyword:文脈から, new_start:計算     |
+| 今日のランチのやつキャンセル              | calendar_delete | keyword:ランチ, date:${todayStr}     |
+| 今月あと何日空いてる？                    | calendar_list   | date:${todayStr}, range_days:${daysLeftInMonth} |
+| 朝一で何がある？何があるんだっけ          | calendar_list   | date:${todayStr}, range_days:1       |
+| 今日の最初の予定                          | calendar_list   | date:${todayStr}, range_days:1       |
+
+### メール系
+| ユーザー表現の例                          | action          | 主なparams                           |
+|-------------------------------------------|-----------------|--------------------------------------|
+| 未読たまってる？来てない？                | gmail_list      | max:5, query:"in:inbox is:unread"    |
+| 山田さんからメール来てない？              | gmail_list      | query:"from:山田 in:inbox"           |
+| 最近来た重要そうなメール                  | gmail_list      | max:5, query:"in:inbox is:unread"    |
+| さっきのメールに了承って返しといて        | gmail_draft     | reply_to_id:直前メールのid, body:了承の旨 |
+| 来週水曜の件は対応可と伝えて              | gmail_draft     | reply_to_id:文脈から, body:対応可の旨 |
+| 前向きに検討しますと丁寧に断っておいて    | gmail_draft     | body:婉曲的にお断りの旨              |
+
+### TODO系
+| ユーザー表現の例                          | action              | 主なparams                           |
+|-------------------------------------------|---------------------|--------------------------------------|
+| あとで提案書作らないと                    | todo_add            | title:"提案書作成"                   |
+| 田中さんへの電話忘れないようにしといて    | todo_add            | title:"田中さんへ電話"               |
+| 今日中にやること一覧                      | todo_list           | filter:"today"                       |
+| 提案書のやつ終わった                      | todo_done_by_keyword| keyword:"提案書"                     |
+| もう全部終わったっけ？                    | todo_list           | filter:"pending"                     |
+| 明日締め切りのやつある？                  | todo_list           | filter:"pending"                     |
+
+### 複合・総合系
+| ユーザー表現の例                          | actions                                        |
+|-------------------------------------------|------------------------------------------------|
+| 今日の予定とTODOまとめて教えて            | [calendar_list(今日), todo_list(today)]        |
+| 今日どんな感じ？今日のまとめ              | briefing                                       |
+| 今週ヤバそう？忙しい？                    | calendar_list(今週)                            |
+| 朝一で何があるんだっけ                    | calendar_list(今日)                            |
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文脈の引き継ぎ
+
+${lastMentionedEmails.length > 0
+  ? `「さっきのメール」「直近のメール」「そのメール」「それ」→ reply_to_id: "${lastMentionedEmails[0]?.id || ''}"（直前メール1件目のid）`
+  : '（直前のメールなし）'}
+${lastMentionedEvents.length > 0
+  ? `「さっきの予定」「その予定」「それ」→ keyword: "${lastMentionedEvents[0]?.title || ''}"（直前予定1件目のタイトル）`
+  : '（直前の予定なし）'}
+
+指示語（「それ」「その件」「あれ」「さっきの」）は必ず上記コンテキストから解決すること。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## ambiguous（判断不能）の処理
+
+actionが特定できない場合は unknown でなく ambiguous:true にして、何を聞けば判断できるかを ambiguous_question に記載すること。
+
+例:
+- 「田中さんの件どうする？」→ { ambiguous:true, ambiguous_question:"田中さんの件というのは、予定・メール・TODOのどれでしょうか？" }
+- 「明日の午後って」（動詞なし）→ { ambiguous:true, ambiguous_question:"明日の午後について、予定の確認ですか？それとも何か追加しますか？" }
+- 「あの件ってどうなった？」→ { ambiguous:true, ambiguous_question:"「あの件」というのは、どの件でしょうか？" }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 絶対ルール（違反禁止）
+
+1. 「未読」「メール来てない？」「たまってる？」 → gmail_list（calendar系にしない）
+2. 「TODO」「タスク」「やること」「忘れないようにしといて」「あとで〜しないと」→ todo系
+3. 「予定」「MTG」「ミーティング」「アポ」「スケジュール」「リマインダー」 → calendar系
+4. todo_done（id指定）は絶対に使わない。必ず todo_done_by_keyword を使うこと
+5. 「キャンセル」「なかったことに」「削除」（カレンダー文脈） → calendar_delete
+6. 独立した複数操作 → actions に複数要素
+7. reply は日本語・1〜2文・簡潔に
+8. 「〇〇を早めて/遅らせて」→ calendar_update（new_start を計算）
+9. 「〇〇分早めて」で元の予定時刻が不明なら ambiguous にして確認
+10. calendar_add_multi: 「月曜と火曜に別々の予定」など複数の異なる日時への追加`;
+
+  // メッセージ履歴（最大10往復）
   const messages = [];
-  for (const m of recentMessages) {
+  for (const m of recentMessages.slice(-10)) {
     messages.push(m);
   }
   messages.push({ role: 'user', content: userMessage });
@@ -107,7 +282,7 @@ RRULE早見表:
   try {
     const response = await client.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: 1200,
       system: systemPrompt,
       messages,
     });
@@ -115,12 +290,30 @@ RRULE早見表:
     let text = response.content[0].text.trim();
     // マークダウンコードブロックを除去
     text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    // 前後に説明文が混入した場合でもJSONオブジェクトを抽出
+    // 前後に説明文が混入してもJSONだけ抽出
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) text = jsonMatch[0].trim();
-    console.log('[ai.parseIntent] raw:', text.slice(0, 200));
+    console.log('[ai.parseIntent] raw:', text.slice(0, 400));
     const parsed = JSON.parse(text);
-    return parsed;
+
+    // 旧フォーマット互換（action が直接ある場合）
+    if (!Array.isArray(parsed.actions) && parsed.action) {
+      parsed.actions = [{
+        action: parsed.action,
+        params: parsed.params || {},
+        needs_confirm: !!parsed.needs_confirm,
+      }];
+    }
+    if (!Array.isArray(parsed.actions) || parsed.actions.length === 0) {
+      parsed.actions = [{ action: 'unknown', params: {}, needs_confirm: false }];
+    }
+
+    return {
+      actions:            parsed.actions,
+      reply:              parsed.reply              || '',
+      ambiguous:          !!parsed.ambiguous,
+      ambiguous_question: parsed.ambiguous_question || '',
+    };
   } catch (err) {
     console.error('[ai.parseIntent] error:', err.message);
     return FALLBACK;
@@ -143,3 +336,38 @@ async function generateReply(systemPrompt, userMessage) {
 }
 
 module.exports = { parseIntent, generateReply };
+
+// ────────────────────────────────────────────────────────────
+// テスト実行: node src/ai.js
+// ────────────────────────────────────────────────────────────
+if (require.main === module) {
+  const testCases = [
+    '今週どんな感じ？',
+    '明後日空いてる？',
+    '来週月曜の14時に田中さんとMTG入れて',
+    '未読たまってる？',
+    'さっきのメールに了承って返しといて',
+    '提案書作るの忘れないようにしといて、期限明日',
+    '今日の予定とTODOまとめて教えて',
+    '田中さんの件どうする？',
+    '朝一で何があるんだっけ',
+  ];
+
+  (async () => {
+    console.log('=== 自然言語理解テスト ===\n');
+    for (const msg of testCases) {
+      const result = await parseIntent(msg, {});
+      console.log(`入力: 「${msg}」`);
+      console.log(`→ actions: ${result.actions.map(a => a.action).join(', ')}`);
+      if (result.ambiguous) {
+        console.log(`→ 確認質問: ${result.ambiguous_question}`);
+      } else {
+        const p = result.actions[0]?.params || {};
+        const pStr = Object.entries(p).slice(0,3).map(([k,v]) => `${k}:${JSON.stringify(v)}`).join(', ');
+        if (pStr) console.log(`→ params: ${pStr}`);
+      }
+      console.log(`→ 返答: ${result.reply}\n`);
+    }
+    process.exit(0);
+  })();
+}
