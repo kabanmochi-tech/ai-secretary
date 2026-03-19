@@ -108,7 +108,7 @@ async function generateMorning() {
     buildScheduleMsg(`本日 ${dateLabel(now)}`, todayEvents),
     buildWeekMsg(weekEvents, dateLabel(now)),
     await buildMailMsg(gmail),
-    buildTodoMsg(),
+    await buildTodoMsg(),
   ];
 }
 
@@ -132,7 +132,7 @@ async function generateEvening() {
     buildScheduleMsg(`明日 ${dateLabel(tomorrow)}`, tomorrowEvents),
     buildWeekMsg(weekEvents, dateLabel(tomorrow)),
     await buildMailMsg(gmail),
-    buildTodoMsg(),
+    await buildTodoMsg(),
   ];
 }
 
