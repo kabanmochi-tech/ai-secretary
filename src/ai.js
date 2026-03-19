@@ -42,6 +42,7 @@ action別のparams:
 - todo_list: { filter: "all|today|pending" }
 - todo_done: { id: 0 }
 - todo_delete: { id: 0 }
+- todo_delete_by_title: { titles: ["削除するタイトルの一部（部分一致でOK）"] }
 - todo_setup_recurring: {
     todos: [{ title: "", priority: "high|normal|low" }],
     reminder_title: "カレンダーリマインダーのタイトル",
@@ -76,6 +77,9 @@ RRULE早見表:
 - 「第2金曜」「第二金曜」→ reminder_rrule: "FREQ=MONTHLY;BYDAY=2FR"
 - 「第3金曜」「第三金曜」→ FREQ=MONTHLY;BYDAY=3FR
 - TODO一覧表示は「TODO見せて」「TODO一覧」「TODOは？」など明示的に確認を求めた場合のみ
+- 「〇〇のTODO消して」「下記のtodo消して」→ todo_delete_by_title（titlesにタイトルの一部を入れる）
+  ※ タイトルのIDは不明なので必ずtodo_delete_by_titleを使うこと。todo_deleteは使わない
+- 「2番と3番を消して」→ titlesに具体的なタイトル文字列（番号ではなく内容）を入れる
 
 今日の日時(JST): ${now}`;
 
