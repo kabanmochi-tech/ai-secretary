@@ -160,7 +160,12 @@ class GmailClient {
     return withRetry(async () => {
       const gmail = await this._getGmail();
       const res = await gmail.users.drafts.send({ userId: 'me', requestBody: { id: draftId } });
-      return { success: true, messageId: res?.data?.id };
+      const messageId = res?.data?.id;
+      if (!messageId) {
+        throw new Error('送信APIは成功しましたがメッセージIDが返りませんでした。Gmailの送信済みを確認してください');
+      }
+      logger.info('gmail', '送信成功', { messageId });
+      return { success: true, messageId };
     });
   }
 
