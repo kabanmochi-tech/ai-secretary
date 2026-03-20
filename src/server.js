@@ -46,7 +46,7 @@ app.post('/webhook', async (req, res) => {
   try {
     const parsed = JSON.parse(body.toString('utf8'));
     for (const event of parsed.events || []) {
-      if (event.type === 'message' && event.message.type === 'text') {
+      if (event.type === 'message' && event.message.type === 'text' && event.source.type === 'user') {
         const userId = event.source.userId;
         const userMessage = event.message.text;
         const replyToken = event.replyToken;
