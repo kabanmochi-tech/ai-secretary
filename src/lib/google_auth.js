@@ -45,7 +45,8 @@ async function getAuthClient() {
         fs.writeFileSync(TOKEN_PATH, JSON.stringify({ ...tokenJson, ...credentials }, null, 2));
         logger.info('google_auth', 'リフレッシュ済みトークンを保存しました');
       } else {
-        logger.warn('google_auth', 'Render環境: リフレッシュ済みトークンは環境変数を手動更新してください');
+        logger.warn('google_auth', 'Render環境: トークンをリフレッシュしました。次回サーバー再起動前にRenderダッシュボードの RENDER_GOOGLE_TOKEN_JSON を下記の値で手動更新してください');
+        logger.warn('google_auth', `RENDER_GOOGLE_TOKEN_JSON更新値: ${JSON.stringify({ ...tokenJson, ...credentials })}`);
       }
     } catch (e) {
       logger.error('google_auth', 'トークンリフレッシュ失敗', { error: e.message });

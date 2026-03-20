@@ -432,6 +432,13 @@ async function dispatch(userId, userMessage, replyToken) {
     }
   }
 
+  // Check pendingAmbiguous expiry (5 minutes)
+  if (session.pendingAmbiguous && session.pendingAmbiguous.timestamp) {
+    if (Date.now() - session.pendingAmbiguous.timestamp > 5 * 60 * 1000) {
+      session.pendingAmbiguous = null;
+    }
+  }
+
   // 表記ゆれを正規化（To do / to-do → TODO）
   userMessage = userMessage.replace(/[Tt]o[\s\-]?[Dd]o/g, 'TODO');
 
@@ -708,7 +715,7 @@ async function dispatch(userId, userMessage, replyToken) {
 
   // ── ambiguous（判断不能）応答の処理 ─────────────────────
   if (intent.ambiguous && intent.ambiguous_question) {
-    session.pendingAmbiguous = { originalMessage: userMessage };
+    session.pendingAmbiguous = { originalMessage: userMessage, timestamp: Date.now() };
     await lineClient.replyMessage(replyToken, intent.ambiguous_question);
     return;
   }
@@ -929,7 +936,8 @@ async function dispatch(userId, userMessage, replyToken) {
     case 'todo_add': {
       try {
         const added = await todo.add(params.title, params.due_date || null, params.priority || 'normal');
-        await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}`);
+        const dueStr = added.due_date ? `\n期限: ${added.due_date.slice(5).replace('-', '/')}` : '';
+        await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
       } catch (e) {
         console.error('[todo_add] error:', e.message);
         await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
@@ -1129,12 +1137,7 @@ async function dispatch(userId, userMessage, replyToken) {
         const failed = [];
         for (const ev of events) {
           try {
-            const conflicts = await calendarClient.checkConflict(ev.start, ev.end);
-            if (conflicts.length > 0) {
-              await calendarClient.addEventForce(ev.title, ev.start, ev.end, ev.description || '');
-            } else {
-              await calendarClient.addEventForce(ev.title, ev.start, ev.end, ev.description || '');
-            }
+            await calendarClient.addEventForce(ev.title, ev.start, ev.end, ev.description || '');
             added.push(`・${ev.title} ${formatEventLabel({ start: ev.start, end: ev.end })}`);
           } catch (err) {
             failed.push(`・${ev.title}（失敗: ${err.message}）`);

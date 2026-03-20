@@ -125,10 +125,9 @@ async function generateEvening() {
   tomorrow.setDate(tomorrow.getDate() + 1);
 
   const tomorrowStr = toDateStr(tomorrow);
-  const weekFromTomorrow = toDateStr(tomorrow);
   const [tomorrowEvents, weekEvents] = await Promise.allSettled([
     cal.listEvents(tomorrowStr, 1),
-    cal.listEvents(weekFromTomorrow, 7),
+    cal.listEvents(tomorrowStr, 7),
   ]).then(r => r.map(x => x.value || []));
 
   return [
