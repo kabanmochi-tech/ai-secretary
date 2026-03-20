@@ -114,6 +114,18 @@ class LineClient {
     }
   }
 
+  async pushToGroup(groupId, text) {
+    if (!groupId) {
+      logger.warn('line', 'pushToGroup: groupId未指定 スキップ');
+      return;
+    }
+    if (!text || typeof text !== 'string') text = '（メッセージなし）';
+    const parts = splitMessage(text);
+    for (const part of parts) {
+      await this._pushWithRetry({ to: groupId, messages: [{ type: 'text', text: part }] });
+    }
+  }
+
   verifySignature(body, signature) {
     return validateSignature(body, this.channelSecret, signature);
   }
@@ -196,3 +208,4 @@ function _shortDate(dateStr) {
 }
 
 module.exports = { LineClient, formatCalendarEvents, formatGmailList, splitMessage };
+

@@ -1,0 +1,39 @@
+# ================================================================
+# AI秘書 — 請求書リマインダー（第2金曜・第3木曜）
+#
+# GitHub Secrets に以下を追加登録してください:
+#   LINE_GROUP_ID_REMINDER : リマインドを送るLINEグループのID
+#
+# グループIDの取得:
+#   node tools/get_group_id.js を実行して案内に従ってください
+# ================================================================
+name: 請求書リマインダー（第2金曜・第3木曜）
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'   # 平日毎日 UTC 0:00 = JST 9:00 に実行
+                              # スクリプト側で第2金曜・第3木曜のみ送信する
+  workflow_dispatch:           # 手動実行（テスト用）
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: 環境変数を設定
+        run: |
+          echo "LINE_CHANNEL_ACCESS_TOKEN=${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}" >> .env
+          echo "LINE_GROUP_ID_REMINDER=${{ secrets.LINE_GROUP_ID_REMINDER }}" >> .env
+
+      - name: リマインダーを実行
+        run: node src/invoice_reminder.js
