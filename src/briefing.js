@@ -47,13 +47,20 @@ function buildWeekMsg(events, fromLabel) {
   }
   const groups = {};
   for (const e of events) {
-    const key = (e.start || '').slice(0, 10);
+    // all-dayはdate文字列(10文字)をそのまま使用、timed eventsはJSTに変換してからslice
+    const raw = e.start || '';
+    const key = raw.length <= 10
+      ? raw
+      : new Date(raw).toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
     if (!groups[key]) groups[key] = [];
     groups[key].push(e);
   }
   for (const key of Object.keys(groups).sort()) {
-    const d = new Date(key + 'T00:00:00+09:00');
-    lines.push(dateLabel(d));
+    // 正午JST(03:00 UTC)で曜日計算→UTC環境でも日付ずれが起きない
+    const d = new Date(`${key}T12:00:00+09:00`);
+    const mm = parseInt(key.slice(5, 7));
+    const dd = parseInt(key.slice(8, 10));
+    lines.push(`${mm}月${dd}日（${WEEKDAY_JA[d.getDay()]}）`);
     for (const e of groups[key]) {
       const s = formatTime(e.start);
       const en = formatTime(e.end);
