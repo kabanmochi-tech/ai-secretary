@@ -655,12 +655,26 @@ async function dispatch(userId, userMessage, replyToken) {
       const flat = userMessage.replace(/\n|\r/g, ' ').trim();
       const hasMultipleItems = /[①-⑩]|（\d）|\(\d\)/.test(userMessage);
       const hasReminder = /リマインド|毎月|繰り返し|第[一二三四五]?[1-5]?金曜|毎週/.test(userMessage);
-      const m = !hasMultipleItems && !hasReminder
+
+      // マルチライン: 「1行目=タイトル\n最終行=todoを追加して」パターンを優先処理
+      let multilineTitle = null;
+      const msgLines = userMessage.trim().split(/[\n\r]+/);
+      if (!hasMultipleItems && !hasReminder && msgLines.length >= 2) {
+        const lastLine = msgLines[msgLines.length - 1];
+        if (/todo[をが]?[\s　]*(追加|加えて|入れて)/i.test(lastLine)) {
+          const candidate = msgLines.slice(0, -1).join(' ').replace(/[「」『』【】]/g, '').trim();
+          if (candidate.length > 1) multilineTitle = candidate;
+        }
+      }
+
+      const m = !hasMultipleItems && !hasReminder && !multilineTitle
         ? flat.match(/TODO[にへ]?[\s　]*(.+?)[\s　]*[をが]?[\s　]*(追加|加えて|入れて|add|登録)/i)
         : null;
-      if (m) {
-        let rawTitle = m[1].trim();
-        // 期限は全メッセージから抽出（「追加して、期限は今週金曜」のようにタイトルの後ろに来る場合があるため）
+
+      // タイトル候補を決定（マルチライン優先 → 正規表現 → フォールスルー）
+      let rawTitle = multilineTitle || (m ? m[1].trim() : null);
+      if (rawTitle) {
+        // 期限は全メッセージから抽出
         const dueDate = extractDueDate(userMessage);
         const cleanTitle = rawTitle
           .replace(/(\d{1,2})[\/月](\d{1,2})日?(?:まで|までに)?/g, '')
@@ -673,15 +687,20 @@ async function dispatch(userId, userMessage, replyToken) {
           .replace(/[\s　]+/g, ' ')
           .trim();
         const title = cleanTitle || rawTitle;
-        try {
-          const added = await todo.add(title, dueDate, 'normal');
-          const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
-          await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
-        } catch (e) {
-          logger.error('dispatcher', 'todo_add error', { error: e.message });
-          await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
+        // タイトルが助詞1文字だけの場合はAIへフォールスルー
+        if (title.length <= 1) {
+          rawTitle = null; // フォールスルーへ
+        } else {
+          try {
+            const added = await todo.add(title, dueDate, 'normal');
+            const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
+            await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
+          } catch (e) {
+            logger.error('dispatcher', 'todo_add error', { error: e.message });
+            await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
+          }
+          return;
         }
-        return;
       }
       // 複数項目・リマインド付き・タイトル取れない場合はAIへフォールスルー
     } else if (/完了|終わった|done|済み/.test(userMessage)) {
