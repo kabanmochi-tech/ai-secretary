@@ -1,5 +1,4 @@
 require('dotenv').config();
-const cron = require('node-cron');
 const { GoogleCalendarClient } = require('./calendar');
 const { GmailClient } = require('./gmail');
 const todo = require('./todo');
@@ -189,47 +188,9 @@ async function sendTodoReminders(lineClient) {
   }
 }
 
-// ── Renderサーバー用cronスケジューラー ──────────
-function startCron() {
-  const lineClient = new LineClient();
-
-  // 朝7時：TODOリマインダー
-  cron.schedule('0 7 * * *', async () => {
-    try {
-      console.log('[reminder] cron実行');
-      await sendTodoReminders(lineClient);
-    } catch (e) {
-      console.error('[reminder] cron error:', e.message);
-    }
-  }, { timezone: 'Asia/Tokyo' });
-
-  // 朝8時
-  cron.schedule('0 8 * * *', async () => {
-    try {
-      console.log('[briefing] 朝cron実行');
-      const messages = await generateMorning();
-      await lineClient.pushMessages(messages);
-    } catch (e) {
-      console.error('[briefing] 朝cron error:', e.message);
-    }
-  }, { timezone: 'Asia/Tokyo' });
-
-  // 夜20時
-  cron.schedule('0 20 * * *', async () => {
-    try {
-      console.log('[briefing] 夜cron実行');
-      const messages = await generateEvening();
-      await lineClient.pushMessages(messages);
-    } catch (e) {
-      console.error('[briefing] 夜cron error:', e.message);
-    }
-  }, { timezone: 'Asia/Tokyo' });
-
-  console.log('[briefing] cronスケジュール登録済み（7:00リマインダー・朝8時・夜20時 JST）');
-}
 
 if (require.main === module) {
   run().catch(err => { console.error(err); process.exit(1); });
 }
 
-module.exports = { generateMorning, generateEvening, startCron, sendTodoReminders };
+module.exports = { generateMorning, generateEvening, sendTodoReminders };

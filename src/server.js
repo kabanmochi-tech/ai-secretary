@@ -11,7 +11,6 @@ const path = require('path');
 
 const { dispatch } = require('./dispatcher');
 const { LineClient } = require('./line');
-const { startCron } = require('./briefing');
 const logger = require('./lib/logger');
 
 const app = express();
@@ -153,7 +152,6 @@ async function startupCheck() {
 app.listen(PORT, async () => {
   await startupCheck();
   logger.info('server', `AI秘書 起動 PORT:${PORT} ENV:${ENV}`);
-  startCron();
 });
 
 module.exports = app;
