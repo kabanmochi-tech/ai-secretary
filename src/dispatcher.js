@@ -721,6 +721,23 @@ async function dispatch(userId, userMessage, replyToken) {
     // それ以外はAIへフォールスルー（複雑な要求はAIが解釈）
   }
 
+  // カレンダーキーワード → スケジュール表示（AI誤解釈防止）
+  if (
+    /スケジュール|予定|カレンダー/.test(userMessage) &&
+    /確認|見せて|出して|チェック|教えて|表示|一覧/.test(userMessage) &&
+    !/追加|登録|作成|変更|削除|入れて/.test(userMessage)
+  ) {
+    try {
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+      const events = await calendarClient.listEvents(today, 1);
+      const text = formatCalendarEvents(events, dateLabel(today), 1);
+      await lineClient.replyMessage(replyToken, text);
+    } catch (e) {
+      await lineClient.replyMessage(replyToken, `スケジュールの取得に失敗しました: ${e.message}`);
+    }
+    return;
+  }
+
   // メールキーワードは確実にメール一覧へ（todo追加・完了などと混同しないよう限定）
   if (/未読メール|メール見せて|メールチェック|inbox/i.test(userMessage)) {
     try {
