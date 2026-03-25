@@ -509,6 +509,34 @@ async function dispatch(userId, userMessage, replyToken) {
     return;
   }
 
+  // 「タスク名 + 消して/けして/削除して」→ TODOキーワードなしでも削除処理（例：「アパート挨拶けして」）
+  if (/消して|けして|削除/.test(userMessage) && !/メール|カレンダー|予定/.test(userMessage)) {
+    const keyword = userMessage
+      .replace(/消して|けして|削除して?/g, '')
+      .replace(/[をがはもで]/g, '')
+      .trim();
+    if (keyword.length > 1) {
+      try {
+        const allPending = await todo.list('pending');
+        const matches = allPending.filter(t =>
+          keyword.includes(t.title) ||
+          t.title.includes(keyword) ||
+          keyword.split(/[\s　]/).some(w => w.length > 1 && t.title.includes(w))
+        );
+        if (matches.length > 0) {
+          const previewList = matches.map(t => `・${t.title}`).join('\n');
+          setPending(session, 'todo_delete_by_title', { toDelete: matches });
+          await lineClient.replyMessage(replyToken,
+            `以下の${matches.length}件のTODOを削除しますか？\n━━━━━━━━━━\n${previewList}`
+          );
+          return;
+        }
+      } catch (e) {
+        // エラー時はAIへフォールスルー
+      }
+    }
+  }
+
   // 「①のタスクを完了/削除にして」→ 番号でTODO参照
   const todoRef = resolveTodoRef(userMessage, session.lastTodos || []);
   if (todoRef) {
