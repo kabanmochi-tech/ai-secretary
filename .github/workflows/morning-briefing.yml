@@ -60,3 +60,20 @@ jobs:
 
       - name: ブリーフィングを送信
         run: node src/briefing.js ${{ steps.type.outputs.type }}
+
+      - name: リフレッシュ済みトークンをSecretsに書き戻す
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_PAT が未設定のためトークン書き戻しをスキップします"
+            exit 0
+          fi
+          if [ ! -f tokens/google_token.json ]; then
+            echo "トークンファイルが存在しないためスキップします"
+            exit 0
+          fi
+          TOKEN=$(cat tokens/google_token.json)
+          gh secret set RENDER_GOOGLE_TOKEN_JSON --body "$TOKEN" --repo ${{ github.repository }}
+          echo "✅ RENDER_GOOGLE_TOKEN_JSON を更新しました"

@@ -75,7 +75,9 @@ async function main() {
         const tokensDir = path.join(__dirname, '../tokens');
         if (!fs.existsSync(tokensDir)) fs.mkdirSync(tokensDir);
 
-        fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2));
+        // refresh_token_created_at を付与して保存（7日期限チェック用）
+        const tokenWithMeta = { ...tokens, refresh_token_created_at: Date.now() };
+        fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokenWithMeta, null, 2));
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<h2>✅ Google認証完了。このブラウザタブを閉じてください。</h2>');

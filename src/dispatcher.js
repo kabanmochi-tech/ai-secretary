@@ -756,12 +756,17 @@ async function dispatch(userId, userMessage, replyToken) {
     !/追加|登録|作成|変更|削除|入れて/.test(userMessage)
   ) {
     try {
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
-      const days = /一週間|1週間|今週|週間|7日/.test(userMessage) ? 7
-                 : /明日/.test(userMessage) ? 2
-                 : 1;
-      const events = await calendarClient.listEvents(today, days);
-      const text = formatCalendarEvents(events, dateLabel(today), days);
+      const isTomorrow = /明日/.test(userMessage) && !/明後日/.test(userMessage);
+      const isWeek = /一週間|1週間|今週|週間|7日/.test(userMessage);
+      const nowJst = jstNow();
+      let baseDate = nowJst.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+      if (isTomorrow) {
+        const tom = new Date(nowJst); tom.setDate(nowJst.getDate() + 1);
+        baseDate = tom.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+      }
+      const days = isWeek ? 7 : 1;
+      const events = await calendarClient.listEvents(baseDate, days);
+      const text = formatCalendarEvents(events, dateLabel(baseDate), days);
       await lineClient.replyMessage(replyToken, text);
     } catch (e) {
       await lineClient.replyMessage(replyToken, `スケジュールの取得に失敗しました: ${e.message}`);

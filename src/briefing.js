@@ -197,7 +197,19 @@ async function sendTodoReminders(lineClient) {
 
 
 if (require.main === module) {
-  run().catch(err => { console.error(err); process.exit(1); });
+  run().catch(async err => {
+    console.error(err);
+    // INVALID_GRANT 発生時はLINEで緊急通知
+    if (String(err.message).includes('INVALID_GRANT')) {
+      try {
+        await lineClient.pushMessage(
+          process.env.LINE_USER_ID,
+          '🚨【要対応】Googleトークンが失効しました\n\nnode tools/setup.js を実行して再認証し、\nGitHub SecretsとRenderの\nRENDER_GOOGLE_TOKEN_JSONを両方更新してください'
+        );
+      } catch (_) { /* 通知失敗は無視 */ }
+    }
+    process.exit(1);
+  });
 }
 
 module.exports = { generateMorning, generateEvening, sendTodoReminders };
