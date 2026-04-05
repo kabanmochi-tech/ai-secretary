@@ -805,9 +805,24 @@ async function dispatch(userId, userMessage, replyToken) {
   }
 
   // ── 複数action の順次実行 ────────────────────────────────
-  const actions = Array.isArray(intent.actions)
+  let actions = Array.isArray(intent.actions)
     ? intent.actions
     : [{ action: intent.action || 'unknown', params: intent.params || {}, needs_confirm: false }];
+
+  // 【明示的依頼の原則】ユーザー発話にTODOのみ指示 → calendar_add系を除去
+  // ユーザー発話にカレンダーのみ指示 → todo_add系を除去（混入バグ防止）
+  if (actions.length > 1) {
+    const msgHasTodoOnly  = /todo|タスク|やること|忘れない|追加して/i.test(userMessage) &&
+                            !/カレンダー|スケジュール|予定.*入れ|登録/i.test(userMessage);
+    const msgHasCalOnly   = /カレンダー.*入れ|スケジュール.*入れ|予定.*入れ|登録/i.test(userMessage) &&
+                            !/todo|タスク|todoも|カレンダーにも/i.test(userMessage);
+    if (msgHasTodoOnly) {
+      actions = actions.filter(a => !['calendar_add','calendar_add_multi','calendar_add_force'].includes(a.action));
+    }
+    if (msgHasCalOnly) {
+      actions = actions.filter(a => !['todo_add','todo_setup_recurring'].includes(a.action));
+    }
+  }
 
   if (actions.length > 1) {
     // 書き込み系actionがある場合は一覧表示をスキップ（追加時にリスト不要）
