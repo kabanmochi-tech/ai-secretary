@@ -724,6 +724,8 @@ async function dispatch(userId, userMessage, replyToken) {
             const added = await todo.add(title, dueDate, 'normal');
             const dueStr = dueDate ? `\n期限: ${dueDate.slice(5).replace('-','/')}` : '';
             await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
+            // 追加後に会話履歴をクリア（タイトルが次の発話に混入するのを防ぐ）
+            session.lastMessages = [];
           } catch (e) {
             logger.error('dispatcher', 'todo_add error', { error: e.message });
             await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
@@ -1051,6 +1053,8 @@ async function dispatch(userId, userMessage, replyToken) {
         const added = await todo.add(params.title, params.due_date || null, params.priority || 'normal');
         const dueStr = added.due_date ? `\n期限: ${added.due_date.slice(5).replace('-', '/')}` : '';
         await lineClient.replyMessage(replyToken, `✅ TODOに追加しました\n${added.title}${dueStr}`);
+        // 追加直後に会話履歴をクリア（タイトルが次の発話に混入するのを防ぐ）
+        session.lastMessages = [];
       } catch (e) {
         console.error('[todo_add] error:', e.message);
         await lineClient.replyMessage(replyToken, `TODO追加に失敗しました: ${e.message}`);
