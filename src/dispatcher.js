@@ -519,10 +519,14 @@ async function dispatch(userId, userMessage, replyToken) {
     if (keyword.length > 1) {
       try {
         const allPending = await todo.list('pending');
+        // 部分一致検索：キーワードの各文字列を2文字以上の断片に分割してすべて試す
+        const keywordParts = keyword.split(/[\s　]/).filter(w => w.length >= 2);
+        // キーワード全体が2文字以上なら丸ごとも候補に（重複除去）
+        if (keyword.length >= 2 && !keywordParts.includes(keyword)) keywordParts.unshift(keyword);
         const matches = allPending.filter(t =>
           keyword.includes(t.title) ||
           t.title.includes(keyword) ||
-          keyword.split(/[\s　]/).some(w => w.length > 1 && t.title.includes(w))
+          keywordParts.some(w => t.title.includes(w))
         );
         if (matches.length > 0) {
           const previewList = matches.map(t => `・${t.title}`).join('\n');
@@ -532,8 +536,15 @@ async function dispatch(userId, userMessage, replyToken) {
           );
           return;
         }
+        // ★マッチなし → AIに渡さず「見つかりません」で返す（AI誤動作防止）
+        await lineClient.replyMessage(replyToken,
+          `「${keyword}」に該当するTODOは見つかりませんでした\n\nTODO一覧を確認しますか？`
+        );
+        return;
       } catch (e) {
-        // エラー時はAIへフォールスルー
+        logger.error('dispatcher', 'todo delete search error', { error: e.message });
+        await lineClient.replyMessage(replyToken, `TODO削除に失敗しました: ${e.message}`);
+        return;
       }
     }
   }
