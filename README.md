@@ -64,7 +64,7 @@ GitHub Actions (cron)
 ### Step 1 — リポジトリをfork・clone
 
 ```bash
-git clone https://github.com/Ohki-tech/ai-secretary.git
+git clone https://github.com/kabanmochi-tech/ai-secretary.git
 cd ai-secretary
 npm install
 cp .env.example .env
