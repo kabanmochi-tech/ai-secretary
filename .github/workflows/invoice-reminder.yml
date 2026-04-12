@@ -34,6 +34,11 @@ jobs:
         run: |
           echo "LINE_CHANNEL_ACCESS_TOKEN=${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}" >> .env
           echo "LINE_GROUP_ID_REMINDER=${{ secrets.LINE_GROUP_ID_REMINDER }}" >> .env
+          echo "REMINDER_SENDER_NAME=${{ secrets.REMINDER_SENDER_NAME }}" >> .env
+          echo "REMINDER_CONTACT_INFO=${{ secrets.REMINDER_CONTACT_INFO }}" >> .env
+          echo "REMINDER_TARGET_GROUP=${{ secrets.REMINDER_TARGET_GROUP }}" >> .env
+          echo "REMINDER_DOCUMENT_NAME=${{ secrets.REMINDER_DOCUMENT_NAME }}" >> .env
+          echo "REMINDER_DEADLINE_DESC=${{ secrets.REMINDER_DEADLINE_DESC }}" >> .env
 
       - name: リマインダーを実行
         run: node src/invoice_reminder.js
